@@ -85,7 +85,7 @@ async function login(request, reply) {
   reply.setCookie("sid", sessionTokenRaw, {
     httpOnly: true,
     secure: env.NODE_ENV === "production",
-    sameSite: "lax",
+    sameSite: "none",
     path: "/",
     signed: true,
     expires: expiresAt,
