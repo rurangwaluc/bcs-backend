@@ -12,7 +12,7 @@ const { sessionAuth } = require("./middleware/sessionAuth");
 const { authRoutes } = require("./routes/auth.routes");
 const { dashboardRoutes } = require("./routes/dashboard.routes");
 const { ownerDashboardRoutes } = require("./routes/dashboard.owner.routes");
-const { ownerRoutes } = require("./routes/owner.routes"); // ✅ FIX: register owner routes
+const { ownerRoutes } = require("./routes/owner.routes");
 
 const { usersRoutes } = require("./routes/users.routes");
 const { customersRoutes } = require("./routes/customers.routes");
@@ -53,14 +53,9 @@ const { uploadsRoutes } = require("./routes/uploads.routes");
 function buildApp() {
   const app = fastify({ logger: true });
 
-  const corsOrigins = env.CORS_ORIGIN
-    ? env.CORS_ORIGIN.split(",")
-        .map((s) => s.trim())
-        .filter(Boolean)
-    : true;
-
+  // ✅ IMPORTANT: allow both browser and server-to-server (Next.js proxy) calls
   app.register(cors, {
-    origin: corsOrigins,
+    origin: true,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
@@ -72,17 +67,17 @@ function buildApp() {
     hook: "onRequest",
   });
 
-  // Multipart (uploads) — strict limits at the server boundary.
+  // Multipart (uploads)
   app.register(multipart, {
     limits: {
-      fileSize: 10 * 1024 * 1024, // 10MB per file
-      files: 5, // max files per request
+      fileSize: 10 * 1024 * 1024,
+      files: 5,
     },
   });
 
   app.register(rateLimit, { global: false });
 
-  // Global auth hook
+  // ✅ Global auth
   app.addHook("preHandler", sessionAuth);
 
   // Health
@@ -95,8 +90,6 @@ function buildApp() {
   app.register(authRoutes);
   app.register(dashboardRoutes);
   app.register(ownerDashboardRoutes);
-
-  // ✅ FIX: Owner endpoints (summary + locations)
   app.register(ownerRoutes);
 
   // Users / messaging / audit
@@ -134,7 +127,7 @@ function buildApp() {
   // Reports
   app.register(reportsRoutes);
 
-  // Uploads (authenticated upload + authenticated read)
+  // Uploads
   app.register(uploadsRoutes);
 
   // Global error handler
