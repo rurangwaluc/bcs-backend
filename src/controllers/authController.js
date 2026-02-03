@@ -82,10 +82,12 @@ async function login(request, reply) {
     description: `User logged in (${user.email})`,
   });
 
+  const isProd = process.env.NODE_ENV === "production";
+
   reply.setCookie("sid", sessionTokenRaw, {
     httpOnly: true,
-    secure: true,
-    sameSite: "none",
+    secure: isProd,
+    sameSite: isProd ? "none" : "lax",
     path: "/",
     signed: true,
     expires: expiresAt,
