@@ -1,6 +1,5 @@
 const crypto = require("crypto");
 const { db } = require("../config/db");
-const { env } = require("../config/env");
 const { users } = require("../db/schema/users.schema");
 const { sessions } = require("../db/schema/sessions.schema");
 const { verifyPassword } = require("../utils/password");
@@ -16,17 +15,13 @@ function sha256Hex(input) {
   return crypto.createHash("sha256").update(String(input)).digest("hex");
 }
 
-function readSignedSid(request) {
-  const raw = request.cookies && request.cookies.sid;
-  if (!raw) return null;
-
-  if (typeof request.unsignCookie === "function") {
-    const res = request.unsignCookie(raw);
-    if (!res || res.valid !== true) return null;
-    return res.value;
-  }
-
-  return raw;
+/**
+ * 🔥 CRITICAL FIX
+ * Do NOT unsign cookies. Signed cookies break when passing
+ * through Next.js proxy (/api) and Vercel.
+ */
+function readSid(request) {
+  return request.cookies?.sid || null;
 }
 
 async function login(request, reply) {
@@ -60,12 +55,10 @@ async function login(request, reply) {
     return reply.status(401).send({ error: "Invalid credentials" });
   }
 
-  // ✅ Store only a hash in the DB (protects you if sessions table ever leaks).
-  // NOTE: this will invalidate existing sessions on deployment (users must re-login).
   const sessionTokenRaw = makeToken();
   const sessionTokenHash = sha256Hex(sessionTokenRaw);
 
-  const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7); // 7 days
+  const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7);
 
   await db.insert(sessions).values({
     userId: user.id,
@@ -82,14 +75,15 @@ async function login(request, reply) {
     description: `User logged in (${user.email})`,
   });
 
-  const isProd = process.env.NODE_ENV === "production";
-
+  /**
+   * 🔥 CRITICAL FIX
+   * Plain cookie — no signing
+   */
   reply.setCookie("sid", sessionTokenRaw, {
     httpOnly: true,
-    secure: isProd,
-    sameSite: isProd ? "none" : "lax",
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
     path: "/",
-    // signed: true,
     expires: expiresAt,
   });
 
@@ -106,12 +100,15 @@ async function login(request, reply) {
 }
 
 async function me(request, reply) {
-  if (!request.user) return reply.status(401).send({ error: "Unauthorized" });
+  if (!request.user) {
+    return reply.status(401).send({ error: "Unauthorized" });
+  }
   return reply.send({ user: request.user });
 }
 
 async function logout(request, reply) {
-  const raw = readSignedSid(request);
+  const raw = readSid(request);
+
   if (raw) {
     const hash = sha256Hex(raw);
     await db.delete(sessions).where(eq(sessions.sessionToken, hash));
