@@ -89,7 +89,7 @@ async function login(request, reply) {
     secure: isProd,
     sameSite: isProd ? "none" : "lax",
     path: "/",
-    signed: true,
+    // signed: true,
     expires: expiresAt,
   });
 
