@@ -215,6 +215,7 @@ const policy = {
 
     // ✅ NEW: Storekeeper fulfills sales (Option B)
     ACTIONS.SALE_VIEW,
+
     ACTIONS.SALE_FULFILL,
 
     // Uploads

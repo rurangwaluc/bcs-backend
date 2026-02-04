@@ -19,14 +19,6 @@ async function salesRoutes(app) {
     listSales,
   );
 
-  app.get(
-    "/sales/:id",
-    {
-      preHandler: [requirePermission(ACTIONS.SALE_VIEW)],
-    },
-    getSale,
-  );
-
   // ✅ CREATE (Seller)
   app.post(
     "/sales",
