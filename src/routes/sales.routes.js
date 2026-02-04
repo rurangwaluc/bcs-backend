@@ -1,13 +1,33 @@
 const ACTIONS = require("../permissions/actions");
 const { requirePermission } = require("../middleware/requirePermission");
+
 const {
   createSale,
+  fulfillSale,
   markSale,
   cancelSale,
 } = require("../controllers/salesController");
+const { listSales, getSale } = require("../controllers/salesReadController");
 
 async function salesRoutes(app) {
-  // Seller creates sale (limit)
+  // ✅ READ
+  app.get(
+    "/sales",
+    {
+      preHandler: [requirePermission(ACTIONS.SALE_VIEW)],
+    },
+    listSales,
+  );
+
+  app.get(
+    "/sales/:id",
+    {
+      preHandler: [requirePermission(ACTIONS.SALE_VIEW)],
+    },
+    getSale,
+  );
+
+  // ✅ CREATE (Seller)
   app.post(
     "/sales",
     {
@@ -17,7 +37,17 @@ async function salesRoutes(app) {
     createSale,
   );
 
-  // Seller marks PAID/PENDING (limit)
+  // ✅ FULFILL (Storekeeper) — DRAFT -> FULFILLED + inventory deduction
+  app.post(
+    "/sales/:id/fulfill",
+    {
+      preHandler: [requirePermission(ACTIONS.SALE_FULFILL)],
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+    },
+    fulfillSale,
+  );
+
+  // ✅ MARK (Seller) — must be fulfilled first
   app.post(
     "/sales/:id/mark",
     {
@@ -27,7 +57,7 @@ async function salesRoutes(app) {
     markSale,
   );
 
-  // Manager/Admin cancels sale (limit)
+  // ✅ CANCEL (Manager/Admin)
   app.post(
     "/sales/:id/cancel",
     {

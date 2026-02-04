@@ -1,8 +1,8 @@
-// backend/src/controllers/salesController.js
 const {
   createSaleSchema,
   markSaleSchema,
   cancelSaleSchema,
+  fulfillSaleSchema,
 } = require("../validators/sales.schema");
 const salesService = require("../services/salesService");
 
@@ -30,16 +30,13 @@ async function createSale(request, reply) {
 
     return reply.send({ ok: true, sale });
   } catch (e) {
-    // ---- Known business errors ----
     if (e.code === "PRODUCT_NOT_FOUND") {
       return reply
         .status(404)
         .send({ error: "Product not found", debug: e.debug });
     }
-
-    if (e.code === "BAD_QTY") {
+    if (e.code === "BAD_QTY")
       return reply.status(400).send({ error: "Invalid qty" });
-    }
 
     if (e.code === "PRICE_TOO_HIGH") {
       return reply.status(409).send({
@@ -48,10 +45,8 @@ async function createSale(request, reply) {
       });
     }
 
-    // ✅ discount validation errors (NEW)
-    if (e.code === "BAD_DISCOUNT") {
+    if (e.code === "BAD_DISCOUNT")
       return reply.status(409).send({ error: "Invalid discount" });
-    }
 
     if (e.code === "DISCOUNT_TOO_HIGH") {
       return reply.status(409).send({
@@ -67,7 +62,48 @@ async function createSale(request, reply) {
       });
     }
 
-    // ---- Unknown -> 500 ----
+    request.log.error(e);
+    return reply.status(500).send({ error: "Internal Server Error" });
+  }
+}
+
+async function fulfillSale(request, reply) {
+  const saleId = Number(request.params.id);
+  if (!saleId) return reply.status(400).send({ error: "Invalid sale id" });
+
+  const parsed = fulfillSaleSchema.safeParse(request.body || {});
+  if (!parsed.success) {
+    return reply.status(400).send({
+      error: "Invalid payload",
+      details: parsed.error.flatten(),
+    });
+  }
+
+  try {
+    const sale = await salesService.fulfillSale({
+      locationId: request.user.locationId,
+      storeKeeperId: request.user.id,
+      saleId,
+      note: parsed.data.note,
+    });
+
+    return reply.send({ ok: true, sale });
+  } catch (e) {
+    if (e.code === "NOT_FOUND")
+      return reply.status(404).send({ error: "Sale not found" });
+
+    if (e.code === "BAD_STATUS")
+      return reply
+        .status(409)
+        .send({ error: "Invalid sale status", debug: e.debug });
+
+    if (e.code === "INSUFFICIENT_INVENTORY_STOCK") {
+      return reply.status(409).send({
+        error: "Insufficient inventory stock",
+        debug: e.debug,
+      });
+    }
+
     request.log.error(e);
     return reply.status(500).send({ error: "Internal Server Error" });
   }
@@ -102,20 +138,6 @@ async function markSale(request, reply) {
       return reply
         .status(409)
         .send({ error: "Invalid sale status", debug: e.debug });
-
-    if (e.code === "INSUFFICIENT_SELLER_STOCK") {
-      return reply.status(409).send({
-        error: "Insufficient seller stock",
-        debug: e.debug,
-      });
-    }
-
-    if (e.code === "INSUFFICIENT_INVENTORY_STOCK") {
-      return reply.status(409).send({
-        error: "Insufficient inventory stock",
-        debug: e.debug,
-      });
-    }
 
     request.log.error(e);
     return reply.status(500).send({ error: "Internal Server Error" });
@@ -153,4 +175,4 @@ async function cancelSale(request, reply) {
   }
 }
 
-module.exports = { createSale, markSale, cancelSale };
+module.exports = { createSale, fulfillSale, markSale, cancelSale };

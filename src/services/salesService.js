@@ -1,29 +1,24 @@
-// backend/src/services/salesService.js
 const { db } = require("../config/db");
 const { sales } = require("../db/schema/sales.schema");
 const { saleItems } = require("../db/schema/sale_items.schema");
 const { products } = require("../db/schema/products.schema");
-const { sellerHoldings } = require("../db/schema/seller_holdings.schema");
-// const { inventoryBalances } = require("../db/schema/inventory.schema"); // ❌ not used in Option B cancel restore
+const { inventoryBalances } = require("../db/schema/inventory.schema");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
-const { eq, and, inArray, sql } = require("drizzle-orm");
+const { eq, and, inArray } = require("drizzle-orm");
 
 /**
- * Phase 1 rules (locked):
- * - Seller creates sale as DRAFT.
- * - Seller marks PAID/PENDING -> status changes + stock deducted.
- * - Cashier records payment -> sale becomes COMPLETED.
+ * Option B (NO holdings):
+ * - Seller creates sale as DRAFT (no stock movement)
+ * - Storekeeper fulfills sale -> deduct inventory -> status becomes FULFILLED
+ * - Seller marks PAID/PENDING -> status changes (NO stock movement here)
  *
- * ✅ Option B (stock request flow):
- * - Stock moves inventory -> seller holdings at /requests/:id/release
- * - Therefore:
- *   - markSale MUST deduct ONLY seller holdings (NOT inventory).
- *   - cancelSale MUST restore ONLY seller holdings (NOT inventory).
- *
- * Discounts:
- * - Seller can discount but NOT above product.maxDiscountPercent.
- * - Seller cannot increase unit price above product.sellingPrice.
- * - Sale-level discountPercent must also obey the strictest maxDiscountPercent among items.
+ * Statuses:
+ * - DRAFT
+ * - FULFILLED
+ * - PENDING
+ * - AWAITING_PAYMENT_RECORD
+ * - COMPLETED (cashier flow, elsewhere)
+ * - CANCELLED
  */
 
 function toInt(n) {
@@ -52,9 +47,7 @@ function computeLine({ qty, unitPrice, discountPercent, discountAmount }) {
   const pctDisc = Math.round((base * pctSafe) / 100);
 
   const amtDisc = toInt(discountAmount);
-
   const totalDisc = clamp(pctDisc + amtDisc, 0, base);
-  const lineTotal = base - totalDisc;
 
   return {
     qty: q,
@@ -62,7 +55,7 @@ function computeLine({ qty, unitPrice, discountPercent, discountAmount }) {
     base,
     discountPercent: pctSafe,
     discountAmount: amtDisc,
-    lineTotal,
+    lineTotal: base - totalDisc,
   };
 }
 
@@ -74,8 +67,8 @@ function applySaleDiscount(subtotal, discountPercent, discountAmount) {
   const pctDisc = Math.round((sub * pctSafe) / 100);
 
   const amtDisc = toInt(discountAmount);
-
   const totalDisc = clamp(pctDisc + amtDisc, 0, sub);
+
   return {
     totalAmount: sub - totalDisc,
     discountPercent: pctSafe,
@@ -104,7 +97,6 @@ async function createSale({
       throw err;
     }
 
-    // Load all products at once (location-safe)
     const prodRows = await tx
       .select()
       .from(products)
@@ -151,6 +143,7 @@ async function createSale({
 
       const itemPct =
         it.discountPercent == null ? 0 : toPct(it.discountPercent);
+
       if (itemPct > itemMax) {
         const err = new Error("Discount percent exceeds allowed maximum");
         err.code = "DISCOUNT_TOO_HIGH";
@@ -237,7 +230,13 @@ async function createSale({
   });
 }
 
-async function markSale({ locationId, sellerId, saleId, status }) {
+/**
+ * ✅ Storekeeper fulfills a DRAFT sale:
+ * - Checks inventoryBalances.qtyOnHand for each item
+ * - Deducts inventory
+ * - Updates sale.status -> FULFILLED
+ */
+async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
   return db.transaction(async (tx) => {
     const saleRows = await tx
       .select()
@@ -248,12 +247,6 @@ async function markSale({ locationId, sellerId, saleId, status }) {
     if (!sale) {
       const err = new Error("Sale not found");
       err.code = "NOT_FOUND";
-      throw err;
-    }
-
-    if (Number(sale.sellerId) !== Number(sellerId)) {
-      const err = new Error("Forbidden");
-      err.code = "FORBIDDEN";
       throw err;
     }
 
@@ -275,51 +268,106 @@ async function markSale({ locationId, sellerId, saleId, status }) {
       throw err;
     }
 
-    // ✅ Option B: deduct ONLY seller holdings
+    // 1) Ensure inventory rows exist + validate enough stock
     for (const it of items) {
       const pid = Number(it.productId);
       const qty = toInt(it.qty);
 
       await tx
-        .insert(sellerHoldings)
-        .values({ locationId, sellerId, productId: pid, qtyOnHand: 0 })
+        .insert(inventoryBalances)
+        .values({ locationId, productId: pid, qtyOnHand: 0 })
         .onConflictDoNothing();
 
-      const holdRows = await tx
+      const invRows = await tx
         .select()
-        .from(sellerHoldings)
+        .from(inventoryBalances)
         .where(
           and(
-            eq(sellerHoldings.locationId, locationId),
-            eq(sellerHoldings.sellerId, sellerId),
-            eq(sellerHoldings.productId, pid),
+            eq(inventoryBalances.locationId, locationId),
+            eq(inventoryBalances.productId, pid),
           ),
         );
 
-      const holding = holdRows[0];
-      const newHoldQty = toInt(holding?.qtyOnHand) - qty;
+      const inv = invRows[0];
+      const newQty = toInt(inv?.qtyOnHand) - qty;
 
-      if (newHoldQty < 0) {
-        const err = new Error("Insufficient seller stock");
-        err.code = "INSUFFICIENT_SELLER_STOCK";
+      if (newQty < 0) {
+        const err = new Error("Insufficient inventory stock");
+        err.code = "INSUFFICIENT_INVENTORY_STOCK";
         err.debug = {
           productId: pid,
-          holding: holding?.qtyOnHand,
+          available: inv?.qtyOnHand ?? 0,
           needed: qty,
         };
         throw err;
       }
 
+      // Deduct now
       await tx
-        .update(sellerHoldings)
-        .set({ qtyOnHand: newHoldQty, updatedAt: new Date() })
+        .update(inventoryBalances)
+        .set({ qtyOnHand: newQty, updatedAt: new Date() })
         .where(
           and(
-            eq(sellerHoldings.locationId, locationId),
-            eq(sellerHoldings.sellerId, sellerId),
-            eq(sellerHoldings.productId, pid),
+            eq(inventoryBalances.locationId, locationId),
+            eq(inventoryBalances.productId, pid),
           ),
         );
+    }
+
+    // 2) Mark sale fulfilled
+    const [updated] = await tx
+      .update(sales)
+      .set({
+        status: "FULFILLED",
+        note: note != null ? note : sale.note,
+        updatedAt: new Date(),
+      })
+      .where(eq(sales.id, saleId))
+      .returning();
+
+    await tx.insert(auditLogs).values({
+      locationId,
+      userId: storeKeeperId,
+      action: "SALE_FULFILL",
+      entity: "sale",
+      entityId: saleId,
+      description: `Sale #${saleId} fulfilled (inventory deducted)`,
+    });
+
+    return updated;
+  });
+}
+
+/**
+ * ✅ Seller finalizes AFTER fulfill:
+ * - Only changes status (NO stock movement)
+ */
+async function markSale({ locationId, sellerId, saleId, status }) {
+  return db.transaction(async (tx) => {
+    const saleRows = await tx
+      .select()
+      .from(sales)
+      .where(and(eq(sales.id, saleId), eq(sales.locationId, locationId)));
+
+    const sale = saleRows[0];
+    if (!sale) {
+      const err = new Error("Sale not found");
+      err.code = "NOT_FOUND";
+      throw err;
+    }
+
+    if (Number(sale.sellerId) !== Number(sellerId)) {
+      const err = new Error("Forbidden");
+      err.code = "FORBIDDEN";
+      throw err;
+    }
+
+    // ✅ Must be fulfilled first
+    if (sale.status !== "FULFILLED") {
+      const err = new Error("Invalid status");
+      err.code = "BAD_STATUS";
+      err.debug = { current: sale.status, required: "FULFILLED" };
+      throw err;
     }
 
     const nextStatus =
@@ -339,13 +387,19 @@ async function markSale({ locationId, sellerId, saleId, status }) {
       action: "SALE_MARK",
       entity: "sale",
       entityId: saleId,
-      description: `Sale #${saleId} marked ${status} -> ${nextStatus} (deducted from seller holdings)`,
+      description: `Sale #${saleId} marked ${status} -> ${nextStatus}`,
     });
 
     return updated;
   });
 }
 
+/**
+ * Cancel rules:
+ * - If COMPLETED => cannot cancel
+ * - If already fulfilled, we must restore inventory (because inventory was deducted at fulfill)
+ * - If still DRAFT, no inventory change needed
+ */
 async function cancelSale({ locationId, userId, saleId, reason }) {
   return db.transaction(async (tx) => {
     const saleRows = await tx
@@ -366,11 +420,12 @@ async function cancelSale({ locationId, userId, saleId, reason }) {
       throw err;
     }
 
-    const needsRestore = ["PENDING", "AWAITING_PAYMENT_RECORD"].includes(
-      String(sale.status),
-    );
+    const needsRestore = [
+      "FULFILLED",
+      "PENDING",
+      "AWAITING_PAYMENT_RECORD",
+    ].includes(String(sale.status));
 
-    // ✅ Option B: restore ONLY seller holdings (inventory stays unchanged)
     if (needsRestore) {
       const items = await tx
         .select()
@@ -382,23 +437,33 @@ async function cancelSale({ locationId, userId, saleId, reason }) {
         const qty = toInt(it.qty);
 
         await tx
-          .insert(sellerHoldings)
-          .values({
-            locationId,
-            sellerId: sale.sellerId,
-            productId: pid,
-            qtyOnHand: 0,
-          })
+          .insert(inventoryBalances)
+          .values({ locationId, productId: pid, qtyOnHand: 0 })
           .onConflictDoNothing();
 
-        await tx.execute(sql`
-          UPDATE seller_holdings
-          SET qty_on_hand = qty_on_hand + ${qty},
-              updated_at = now()
-          WHERE location_id = ${locationId}
-            AND seller_id = ${sale.sellerId}
-            AND product_id = ${pid}
-        `);
+        // Restore inventory
+        const invRows = await tx
+          .select()
+          .from(inventoryBalances)
+          .where(
+            and(
+              eq(inventoryBalances.locationId, locationId),
+              eq(inventoryBalances.productId, pid),
+            ),
+          );
+
+        const inv = invRows[0];
+        const restored = toInt(inv?.qtyOnHand) + qty;
+
+        await tx
+          .update(inventoryBalances)
+          .set({ qtyOnHand: restored, updatedAt: new Date() })
+          .where(
+            and(
+              eq(inventoryBalances.locationId, locationId),
+              eq(inventoryBalances.productId, pid),
+            ),
+          );
       }
     }
 
@@ -427,4 +492,4 @@ async function cancelSale({ locationId, userId, saleId, reason }) {
   });
 }
 
-module.exports = { createSale, markSale, cancelSale };
+module.exports = { createSale, fulfillSale, markSale, cancelSale };

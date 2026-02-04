@@ -120,8 +120,12 @@ const ACTIONS = {
   // =====================
   SALE_CREATE: "SALE_CREATE",
   SALE_VIEW: "SALE_VIEW",
+  SALE_FULFILL: "SALE_FULFILL",
   SALE_MARK: "SALE_MARK",
   SALE_CANCEL: "SALE_CANCEL",
+
+  // ✅ NEW (Option B): Storekeeper fulfills a draft sale (deduct inventory)
+  SALE_FULFILL: "SALE_FULFILL",
 
   // =====================
   // Payments / Cash

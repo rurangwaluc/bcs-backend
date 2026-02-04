@@ -89,6 +89,10 @@ const policy = {
     ACTIONS.SALE_VIEW,
     ACTIONS.SALE_MARK,
     ACTIONS.SALE_CANCEL,
+
+    // ✅ NEW: allow admin to fulfill sales too
+    ACTIONS.SALE_FULFILL,
+
     ACTIONS.PAYMENT_RECORD,
     ACTIONS.PAYMENT_VIEW,
 
@@ -208,6 +212,10 @@ const policy = {
 
     // Holdings
     ACTIONS.HOLDINGS_VIEW,
+
+    // ✅ NEW: Storekeeper fulfills sales (Option B)
+    ACTIONS.SALE_VIEW,
+    ACTIONS.SALE_FULFILL,
 
     // Uploads
     ACTIONS.UPLOAD_CREATE,

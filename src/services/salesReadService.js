@@ -16,9 +16,8 @@ async function getSaleById({ locationId, saleId }) {
       s.canceled_at as "canceledAt",
       s.canceled_by as "canceledBy",
       s.cancel_reason as "cancelReason",
-COALESCE(c.name, s.customer_name) as "customerName",
-COALESCE(c.phone, s.customer_phone) as "customerPhone"
-
+      COALESCE(c.name, s.customer_name) as "customerName",
+      COALESCE(c.phone, s.customer_phone) as "customerPhone"
     FROM sales s
     LEFT JOIN customers c ON c.id = s.customer_id
     WHERE s.location_id = ${locationId} AND s.id = ${saleId}
@@ -50,36 +49,34 @@ COALESCE(c.phone, s.customer_phone) as "customerPhone"
 }
 
 async function listSales({ locationId, filters }) {
-  const {
-    status,
-    sellerId,
-    q,
-    dateFrom,
-    dateTo,
-    limit = 50
-  } = filters;
+  const { status, sellerId, q, dateFrom, dateTo, limit = 50 } = filters;
 
-  // Build simple dynamic SQL safely
-  const pattern = q ? `%${q}%` : null;
+  const pattern = q ? `%${String(q)}%` : null;
 
   const res = await db.execute(sql`
-  SELECT
-  s.id,
-  s.status,
-  s.total_amount as "totalAmount",
-  s.created_at as "createdAt",
-  s.seller_id as "sellerId",
-  s.customer_id as "customerId",
-  -- ✅ fallback to sale columns if customer table join is empty
-  COALESCE(c.name, s.customer_name) as "customerName",
-  COALESCE(c.phone, s.customer_phone) as "customerPhone"
-FROM sales s
-LEFT JOIN customers c ON c.id = s.customer_id
-
+    SELECT
+      s.id,
+      s.status,
+      s.total_amount as "totalAmount",
+      s.created_at as "createdAt",
+      s.seller_id as "sellerId",
+      s.customer_id as "customerId",
+      COALESCE(c.name, s.customer_name) as "customerName",
+      COALESCE(c.phone, s.customer_phone) as "customerPhone"
+    FROM sales s
+    LEFT JOIN customers c ON c.id = s.customer_id
     WHERE s.location_id = ${locationId}
-      ${status ? sql`AND s.status = ${status}` : sql``}
+      ${status ? sql`AND s.status = ${String(status)}` : sql``}
       ${sellerId ? sql`AND s.seller_id = ${Number(sellerId)}` : sql``}
-      ${pattern ? sql`AND (c.name ILIKE ${pattern} OR c.phone ILIKE ${pattern})` : sql``}
+      ${
+        pattern
+          ? sql`AND (
+              COALESCE(c.name, s.customer_name) ILIKE ${pattern}
+              OR COALESCE(c.phone, s.customer_phone) ILIKE ${pattern}
+              OR CAST(s.id AS TEXT) ILIKE ${pattern}
+            )`
+          : sql``
+      }
       ${dateFrom ? sql`AND s.created_at >= ${new Date(dateFrom)}` : sql``}
       ${dateTo ? sql`AND s.created_at <= ${new Date(dateTo)}` : sql``}
     ORDER BY s.created_at DESC
