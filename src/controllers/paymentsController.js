@@ -1,3 +1,4 @@
+// backend/src/controllers/paymentsController.js
 const { recordPaymentSchema } = require("../validators/payments.schema");
 const paymentService = require("../services/paymentService");
 
@@ -14,9 +15,10 @@ async function recordPayment(request, reply) {
     const sale = await paymentService.recordPayment({
       locationId: request.user.locationId,
       cashierId: request.user.id,
+
       saleId: parsed.data.saleId,
       amount: parsed.data.amount,
-      method: parsed.data.method,
+      method: String(parsed.data.method || "CASH").toUpperCase(),
       note: parsed.data.note,
 
       // ✅ PASS SESSION ID
@@ -25,6 +27,7 @@ async function recordPayment(request, reply) {
 
     return reply.send({ ok: true, sale });
   } catch (e) {
+    // known errors
     if (e.code === "NOT_FOUND")
       return reply.status(404).send({ error: "Sale not found" });
 

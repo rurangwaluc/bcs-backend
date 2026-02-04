@@ -1,18 +1,16 @@
+// backend/src/validators/payments.schema.js
 const { z } = require("zod");
 
 const recordPaymentSchema = z.object({
   saleId: z.number().int().positive(),
   amount: z.number().int().positive(),
 
-  // ✅ match what frontend can send (and what you want to support)
-  method: z
-    .enum(["CASH", "MOMO", "CARD", "BANK", "OTHER"])
-    .optional()
-    .default("CASH"),
+  // ✅ match frontend
+  method: z.enum(["CASH", "MOMO", "CARD", "BANK", "OTHER"]).optional(),
 
-  note: z.string().max(200).optional(),
+  note: z.string().trim().max(200).optional(),
 
-  // ✅ REQUIRED by your recordPayment service (session validation)
+  // ✅ REQUIRED by backend service
   cashSessionId: z.number().int().positive(),
 });
 

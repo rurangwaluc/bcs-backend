@@ -1,3 +1,4 @@
+// backend/src/services/paymentService.js
 const { db } = require("../config/db");
 const { payments } = require("../db/schema/payments.schema");
 const { sales } = require("../db/schema/sales.schema");
@@ -15,8 +16,10 @@ async function recordPayment({
   note,
   cashSessionId,
 }) {
+  const cleanMethod = String(method || "CASH").toUpperCase();
+
   return db.transaction(async (tx) => {
-    // 1️⃣ Load sale
+    // 1) Load sale
     const [sale] = await tx
       .select()
       .from(sales)
@@ -28,21 +31,21 @@ async function recordPayment({
       throw err;
     }
 
-    // 2️⃣ Status check
+    // 2) Status check
     if (!["AWAITING_PAYMENT_RECORD", "PENDING"].includes(sale.status)) {
       const err = new Error("Invalid sale status");
       err.code = "BAD_STATUS";
       throw err;
     }
 
-    // 3️⃣ Amount check
-    if (amount !== sale.totalAmount) {
+    // 3) Amount check (strict)
+    if (Number(amount) !== Number(sale.totalAmount)) {
       const err = new Error("Amount mismatch");
       err.code = "BAD_AMOUNT";
       throw err;
     }
 
-    // 4️⃣ Validate OPEN cash session
+    // 4) Validate OPEN cash session
     const sessionCheck = await tx.execute(sql`
       SELECT id FROM cash_sessions
       WHERE id = ${cashSessionId}
@@ -52,55 +55,55 @@ async function recordPayment({
       LIMIT 1
     `);
 
-    const rows = sessionCheck.rows || sessionCheck;
+    const rows = sessionCheck?.rows || sessionCheck || [];
     if (rows.length === 0) {
       const err = new Error("No open cash session");
       err.code = "NO_OPEN_SESSION";
       throw err;
     }
 
-    // 5️⃣ Prevent double payment
+    // 5) Prevent double payment
     const existing = await tx.execute(sql`
       SELECT id FROM payments WHERE sale_id = ${saleId} LIMIT 1
     `);
-
-    if ((existing.rows || existing).length > 0) {
+    const existingRows = existing?.rows || existing || [];
+    if (existingRows.length > 0) {
       const err = new Error("Duplicate payment");
       err.code = "DUPLICATE_PAYMENT";
       throw err;
     }
 
-    // 6️⃣ Insert payment (✅ LINKED TO SESSION)
+    // 6) Insert payment (✅ LINKED TO SESSION)
     await tx.insert(payments).values({
       locationId,
       saleId,
       cashierId,
+      cashSessionId, // ✅ THIS IS THE KEY FIX
       amount,
-      method: method || "CASH",
+      method: cleanMethod,
       note: note || null,
-      cashSessionId,
     });
 
-    // 7️⃣ Cash ledger
+    // 7) Cash ledger
     await tx.insert(cashLedger).values({
       locationId,
       cashierId,
       type: "SALE_PAYMENT",
       direction: "IN",
       amount,
-      method: method || "CASH",
+      method: cleanMethod,
       saleId,
       note: "Sale payment recorded",
     });
 
-    // 8️⃣ Complete sale
+    // 8) Complete sale
     const [updatedSale] = await tx
       .update(sales)
       .set({ status: "COMPLETED", updatedAt: new Date() })
       .where(eq(sales.id, saleId))
       .returning();
 
-    // 9️⃣ Audit log
+    // 9) Audit log
     await tx.insert(auditLogs).values({
       userId: cashierId,
       action: "PAYMENT_RECORD",
