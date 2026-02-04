@@ -12,10 +12,16 @@ async function updatePricing({
   maxDiscountPercent,
   userId,
 }) {
-  // safety
+  // Safety: normalize numbers (including strings like "1200")
   const pp = Number(purchasePrice);
   const sp = Number(sellingPrice);
-  const md = Number(maxDiscountPercent);
+
+  // If maxDiscountPercent is optional on UI, default to 0 safely
+  const mdRaw =
+    maxDiscountPercent === undefined || maxDiscountPercent === null
+      ? 0
+      : maxDiscountPercent;
+  const md = Number(mdRaw);
 
   if (!Number.isFinite(pp) || pp < 0) {
     const err = new Error("Purchase price must be >= 0");
@@ -41,8 +47,18 @@ async function updatePricing({
     throw err;
   }
 
-  // ✅ IMPORTANT:
-  // purchasePrice from payload must be saved in products.costPrice (DB: cost_price)
+  if (!locationId) {
+    const err = new Error("Missing locationId");
+    err.code = "BAD_CONTEXT";
+    throw err;
+  }
+
+  if (!userId) {
+    const err = new Error("Missing userId");
+    err.code = "BAD_CONTEXT";
+    throw err;
+  }
+
   const [product] = await db
     .update(products)
     .set({
@@ -60,7 +76,9 @@ async function updatePricing({
     throw err;
   }
 
+  // ✅ CRITICAL FIX: include locationId to satisfy NOT NULL constraint
   await db.insert(auditLogs).values({
+    locationId,
     userId,
     action: "PRODUCT_PRICING_UPDATE",
     entity: "product",
