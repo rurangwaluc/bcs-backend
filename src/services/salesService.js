@@ -1,3 +1,4 @@
+// backend/src/services/salesService.js
 const { db } = require("../config/db");
 const { sales } = require("../db/schema/sales.schema");
 const { saleItems } = require("../db/schema/sale_items.schema");
@@ -250,10 +251,10 @@ async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
       throw err;
     }
 
-    if (sale.status !== "DRAFT") {
+    if (String(sale.status) !== "DRAFT") {
       const err = new Error("Invalid status");
       err.code = "BAD_STATUS";
-      err.debug = { current: sale.status };
+      err.debug = { current: sale.status, required: "DRAFT" };
       throw err;
     }
 
@@ -268,7 +269,7 @@ async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
       throw err;
     }
 
-    // 1) Ensure inventory rows exist + validate enough stock
+    // Ensure inventory rows exist + validate enough stock + deduct
     for (const it of items) {
       const pid = Number(it.productId);
       const qty = toInt(it.qty);
@@ -289,20 +290,20 @@ async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
         );
 
       const inv = invRows[0];
-      const newQty = toInt(inv?.qtyOnHand) - qty;
+      const currentQty = toInt(inv?.qtyOnHand);
+      const newQty = currentQty - qty;
 
       if (newQty < 0) {
         const err = new Error("Insufficient inventory stock");
         err.code = "INSUFFICIENT_INVENTORY_STOCK";
         err.debug = {
           productId: pid,
-          available: inv?.qtyOnHand ?? 0,
+          available: currentQty,
           needed: qty,
         };
         throw err;
       }
 
-      // Deduct now
       await tx
         .update(inventoryBalances)
         .set({ qtyOnHand: newQty, updatedAt: new Date() })
@@ -314,7 +315,6 @@ async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
         );
     }
 
-    // 2) Mark sale fulfilled
     const [updated] = await tx
       .update(sales)
       .set({
@@ -341,6 +341,11 @@ async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
 /**
  * ✅ Seller finalizes AFTER fulfill:
  * - Only changes status (NO stock movement)
+ *
+ * ✅ IMPORTANT: idempotent
+ * - if already PENDING and seller marks PENDING again -> return sale, no error
+ * - if already AWAITING_PAYMENT_RECORD and seller marks PAID again -> return sale, no error
+ * - allow switching between PENDING <-> AWAITING_PAYMENT_RECORD (business choice)
  */
 async function markSale({ locationId, sellerId, saleId, status }) {
   return db.transaction(async (tx) => {
@@ -362,11 +367,17 @@ async function markSale({ locationId, sellerId, saleId, status }) {
       throw err;
     }
 
-    // ✅ Must be fulfilled first
-    if (sale.status !== "FULFILLED") {
+    const current = String(sale.status);
+
+    // Allowed states to "mark" from:
+    // - FULFILLED: first time marking after storekeeper fulfilled
+    // - PENDING / AWAITING_PAYMENT_RECORD: allow re-mark or switching (idempotent + flexibility)
+    const allowed = ["FULFILLED", "PENDING", "AWAITING_PAYMENT_RECORD"];
+
+    if (!allowed.includes(current)) {
       const err = new Error("Invalid status");
       err.code = "BAD_STATUS";
-      err.debug = { current: sale.status, required: "FULFILLED" };
+      err.debug = { current: sale.status, allowed };
       throw err;
     }
 
@@ -374,6 +385,11 @@ async function markSale({ locationId, sellerId, saleId, status }) {
       String(status).toUpperCase() === "PAID"
         ? "AWAITING_PAYMENT_RECORD"
         : "PENDING";
+
+    // ✅ Idempotent: no-op if already in desired status
+    if (current === nextStatus) {
+      return sale;
+    }
 
     const [updated] = await tx
       .update(sales)
@@ -397,7 +413,7 @@ async function markSale({ locationId, sellerId, saleId, status }) {
 /**
  * Cancel rules:
  * - If COMPLETED => cannot cancel
- * - If already fulfilled, we must restore inventory (because inventory was deducted at fulfill)
+ * - If already fulfilled (or later), restore inventory (because inventory was deducted at fulfill)
  * - If still DRAFT, no inventory change needed
  */
 async function cancelSale({ locationId, userId, saleId, reason }) {
@@ -414,7 +430,7 @@ async function cancelSale({ locationId, userId, saleId, reason }) {
       throw err;
     }
 
-    if (sale.status === "COMPLETED") {
+    if (String(sale.status) === "COMPLETED") {
       const err = new Error("Cannot cancel completed sale");
       err.code = "BAD_STATUS";
       throw err;
@@ -441,7 +457,6 @@ async function cancelSale({ locationId, userId, saleId, reason }) {
           .values({ locationId, productId: pid, qtyOnHand: 0 })
           .onConflictDoNothing();
 
-        // Restore inventory
         const invRows = await tx
           .select()
           .from(inventoryBalances)
