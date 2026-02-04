@@ -4,7 +4,7 @@ const { env } = require("./config/env");
 const { buildApp } = require("./app");
 const { pingDb } = require("./config/db");
 
-// Catch anything that would otherwise crash silently
+// DO NOT let Fastify errors hide
 process.on("uncaughtException", (err) => {
   console.error("❌ UNCAUGHT EXCEPTION");
   console.error(err);
@@ -18,17 +18,18 @@ process.on("unhandledRejection", (err) => {
 });
 
 async function start() {
-  const app = buildApp();
+  let app;
 
-  // ---- Validate env early ----
-  const PORT = Number(env.PORT) || 3000;
-
-  if (!Number.isInteger(PORT) || PORT <= 0) {
-    app.log.error({ PORT: env.PORT }, "❌ Invalid PORT environment variable");
+  try {
+    app = buildApp(); // <-- error is likely HERE
+  } catch (err) {
+    console.error("❌ Fastify buildApp failed");
+    console.error(err);
     process.exit(1);
   }
 
-  // ---- Database check ----
+  const PORT = Number(env.PORT) || 3000;
+
   try {
     await pingDb();
     app.log.info("✅ Database connected");
@@ -37,7 +38,6 @@ async function start() {
     process.exit(1);
   }
 
-  // ---- Start server ----
   try {
     await app.listen({
       port: PORT,
@@ -46,7 +46,8 @@ async function start() {
 
     app.log.info(`🚀 Server running on port ${PORT}`);
   } catch (err) {
-    app.log.error({ err }, "❌ Server failed to start");
+    app.log.error("❌ Server failed to start");
+    app.log.error(err); // 👈 THIS was missing
     process.exit(1);
   }
 }
