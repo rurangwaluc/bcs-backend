@@ -7,7 +7,7 @@ async function getSale(request, reply) {
 
   const sale = await salesReadService.getSaleById({
     locationId: request.user.locationId,
-    saleId
+    saleId,
   });
 
   if (!sale) return reply.status(404).send({ error: "Sale not found" });
@@ -27,7 +27,7 @@ async function listSales(request, reply) {
     q: request.query.q || null,
     dateFrom: request.query.dateFrom || null,
     dateTo: request.query.dateTo || null,
-    limit: request.query.limit || 50
+    limit: request.query.limit || 50,
   };
 
   // Seller restricted to own
@@ -37,7 +37,7 @@ async function listSales(request, reply) {
 
   const sales = await salesReadService.listSales({
     locationId: request.user.locationId,
-    filters
+    filters,
   });
 
   return reply.send({ ok: true, sales });

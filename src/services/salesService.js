@@ -4,20 +4,26 @@ const { sales } = require("../db/schema/sales.schema");
 const { saleItems } = require("../db/schema/sale_items.schema");
 const { products } = require("../db/schema/products.schema");
 const { sellerHoldings } = require("../db/schema/seller_holdings.schema");
-const { inventoryBalances } = require("../db/schema/inventory.schema");
+// const { inventoryBalances } = require("../db/schema/inventory.schema"); // ❌ not used in Option B cancel restore
 const { auditLogs } = require("../db/schema/audit_logs.schema");
 const { eq, and, inArray, sql } = require("drizzle-orm");
 
 /**
  * Phase 1 rules (locked):
  * - Seller creates sale as DRAFT.
- * - Seller marks PAID/PENDING -> status changes + stock deducted (inventory + seller holdings).
+ * - Seller marks PAID/PENDING -> status changes + stock deducted.
  * - Cashier records payment -> sale becomes COMPLETED.
+ *
+ * ✅ Option B (stock request flow):
+ * - Stock moves inventory -> seller holdings at /requests/:id/release
+ * - Therefore:
+ *   - markSale MUST deduct ONLY seller holdings (NOT inventory).
+ *   - cancelSale MUST restore ONLY seller holdings (NOT inventory).
  *
  * Discounts:
  * - Seller can discount but NOT above product.maxDiscountPercent.
  * - Seller cannot increase unit price above product.sellingPrice.
- * - Sale-level discountPercent must also obey the strictest maxDiscountPercent among items (simple + safe).
+ * - Sale-level discountPercent must also obey the strictest maxDiscountPercent among items.
  */
 
 function toInt(n) {
@@ -108,10 +114,7 @@ async function createSale({
 
     const prodMap = new Map(prodRows.map((p) => [Number(p.id), p]));
 
-    // We enforce sale-level discount <= strictest max among items
     let strictMaxDisc = 100;
-
-    // Build lines + compute subtotal
     const lines = [];
     let subtotal = 0;
 
@@ -143,7 +146,6 @@ async function createSale({
         throw err;
       }
 
-      // ✅ Enforce per-item max discount percent
       const itemMax = clamp(toPct(prod.maxDiscountPercent ?? 0), 0, 100);
       strictMaxDisc = Math.min(strictMaxDisc, itemMax);
 
@@ -183,7 +185,6 @@ async function createSale({
       });
     }
 
-    // ✅ Enforce sale-level discount percent too (safe + simple)
     const salePct = discountPercent == null ? 0 : toPct(discountPercent);
     if (salePct > strictMaxDisc) {
       const err = new Error("Sale discount percent exceeds allowed maximum");
@@ -197,7 +198,6 @@ async function createSale({
 
     const saleDisc = applySaleDiscount(subtotal, salePct, discountAmount);
 
-    // 1) Insert sale (DRAFT)
     const [sale] = await tx
       .insert(sales)
       .values({
@@ -214,7 +214,6 @@ async function createSale({
       })
       .returning();
 
-    // 2) Insert sale items with required fields
     for (const ln of lines) {
       await tx.insert(saleItems).values({
         saleId: sale.id,
@@ -225,9 +224,8 @@ async function createSale({
       });
     }
 
-    // 3) Audit ✅ FIX: include locationId
     await tx.insert(auditLogs).values({
-      locationId, // ✅ required by DB
+      locationId,
       userId: sellerId,
       action: "SALE_CREATE",
       entity: "sale",
@@ -277,6 +275,7 @@ async function markSale({ locationId, sellerId, saleId, status }) {
       throw err;
     }
 
+    // ✅ Option B: deduct ONLY seller holdings
     for (const it of items) {
       const pid = Number(it.productId);
       const qty = toInt(it.qty);
@@ -299,6 +298,7 @@ async function markSale({ locationId, sellerId, saleId, status }) {
 
       const holding = holdRows[0];
       const newHoldQty = toInt(holding?.qtyOnHand) - qty;
+
       if (newHoldQty < 0) {
         const err = new Error("Insufficient seller stock");
         err.code = "INSUFFICIENT_SELLER_STOCK";
@@ -311,30 +311,6 @@ async function markSale({ locationId, sellerId, saleId, status }) {
       }
 
       await tx
-        .insert(inventoryBalances)
-        .values({ locationId, productId: pid, qtyOnHand: 0 })
-        .onConflictDoNothing();
-
-      const invRows = await tx
-        .select()
-        .from(inventoryBalances)
-        .where(
-          and(
-            eq(inventoryBalances.locationId, locationId),
-            eq(inventoryBalances.productId, pid),
-          ),
-        );
-
-      const inv = invRows[0];
-      const newInvQty = toInt(inv?.qtyOnHand) - qty;
-      if (newInvQty < 0) {
-        const err = new Error("Insufficient inventory stock");
-        err.code = "INSUFFICIENT_INVENTORY_STOCK";
-        err.debug = { productId: pid, inventory: inv?.qtyOnHand, needed: qty };
-        throw err;
-      }
-
-      await tx
         .update(sellerHoldings)
         .set({ qtyOnHand: newHoldQty, updatedAt: new Date() })
         .where(
@@ -342,16 +318,6 @@ async function markSale({ locationId, sellerId, saleId, status }) {
             eq(sellerHoldings.locationId, locationId),
             eq(sellerHoldings.sellerId, sellerId),
             eq(sellerHoldings.productId, pid),
-          ),
-        );
-
-      await tx
-        .update(inventoryBalances)
-        .set({ qtyOnHand: newInvQty, updatedAt: new Date() })
-        .where(
-          and(
-            eq(inventoryBalances.locationId, locationId),
-            eq(inventoryBalances.productId, pid),
           ),
         );
     }
@@ -367,14 +333,13 @@ async function markSale({ locationId, sellerId, saleId, status }) {
       .where(eq(sales.id, saleId))
       .returning();
 
-    // Audit ✅ FIX: include locationId
     await tx.insert(auditLogs).values({
-      locationId, // ✅ required by DB
+      locationId,
       userId: sellerId,
       action: "SALE_MARK",
       entity: "sale",
       entityId: saleId,
-      description: `Sale #${saleId} marked ${status} -> ${nextStatus} (stock deducted)`,
+      description: `Sale #${saleId} marked ${status} -> ${nextStatus} (deducted from seller holdings)`,
     });
 
     return updated;
@@ -405,6 +370,7 @@ async function cancelSale({ locationId, userId, saleId, reason }) {
       String(sale.status),
     );
 
+    // ✅ Option B: restore ONLY seller holdings (inventory stays unchanged)
     if (needsRestore) {
       const items = await tx
         .select()
@@ -414,19 +380,6 @@ async function cancelSale({ locationId, userId, saleId, reason }) {
       for (const it of items) {
         const pid = Number(it.productId);
         const qty = toInt(it.qty);
-
-        await tx
-          .insert(inventoryBalances)
-          .values({ locationId, productId: pid, qtyOnHand: 0 })
-          .onConflictDoNothing();
-
-        await tx.execute(sql`
-          UPDATE inventory_balances
-          SET qty_on_hand = qty_on_hand + ${qty},
-              updated_at = now()
-          WHERE location_id = ${locationId}
-            AND product_id = ${pid}
-        `);
 
         await tx
           .insert(sellerHoldings)
@@ -461,9 +414,8 @@ async function cancelSale({ locationId, userId, saleId, reason }) {
       .where(eq(sales.id, saleId))
       .returning();
 
-    // Audit ✅ FIX: include locationId
     await tx.insert(auditLogs).values({
-      locationId, // ✅ required by DB
+      locationId,
       userId,
       action: "SALE_CANCEL",
       entity: "sale",
