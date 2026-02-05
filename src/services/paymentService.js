@@ -103,13 +103,15 @@ async function recordPayment({
       .where(eq(sales.id, saleId))
       .returning();
 
-    // 9) Audit log
+    // 9️⃣ Audit log (✅ include locationId)
     await tx.insert(auditLogs).values({
+      locationId, // ✅ FIX
       userId: cashierId,
       action: "PAYMENT_RECORD",
       entity: "sale",
       entityId: saleId,
       description: `Payment recorded for sale #${saleId}`,
+      meta: null,
     });
 
     return updatedSale;
