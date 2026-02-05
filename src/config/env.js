@@ -1,50 +1,30 @@
 // backend/src/config/env.js
+const path = require("path");
 const dotenv = require("dotenv");
-const { z } = require("zod");
 
-dotenv.config();
+// IMPORTANT:
+// - override:true makes .env win over any already-set Windows environment variables
+// - explicit path avoids loading a different .env by mistake
+dotenv.config({
+  path: path.resolve(process.cwd(), ".env"),
+  override: true,
+});
 
-const EnvSchema = z
-  .object({
-    NODE_ENV: z
-      .enum(["development", "test", "production"])
-      .default("development"),
-    PORT: z.coerce.number().int().positive().default(4000),
-    DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
-    SESSION_SECRET: z
-      .string()
-      .min(10, "SESSION_SECRET must be at least 10 chars"),
-    CORS_ORIGIN: z.string().optional(),
-  })
-  .superRefine((val, ctx) => {
-    // In production, do not allow open CORS by default.
-    if (val.NODE_ENV === "production") {
-      if (!val.CORS_ORIGIN || !val.CORS_ORIGIN.trim()) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["CORS_ORIGIN"],
-          message:
-            "CORS_ORIGIN is required in production (comma-separated list of allowed origins)",
-        });
-      }
-      if (val.CORS_ORIGIN && val.CORS_ORIGIN.trim() === "*") {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["CORS_ORIGIN"],
-          message: "CORS_ORIGIN must not be '*' in production",
-        });
-      }
-    }
-  });
-
-const parsed = EnvSchema.safeParse(process.env);
-
-if (!parsed.success) {
-  console.error("❌ Invalid environment variables:");
-  console.error(parsed.error.format());
-  process.exit(1);
+function required(name, v) {
+  const val = (v ?? "").toString().trim();
+  if (!val) throw new Error(`Missing env: ${name}`);
+  return val;
 }
 
-module.exports = {
-  env: parsed.data,
+const env = {
+  NODE_ENV: (process.env.NODE_ENV || "development").trim(),
+  PORT: Number(process.env.PORT || 4000),
+
+  // Must come from .env (and MUST override shell variables)
+  DATABASE_URL: required("DATABASE_URL", process.env.DATABASE_URL),
+
+  SESSION_SECRET: required("SESSION_SECRET", process.env.SESSION_SECRET),
+  CORS_ORIGIN: (process.env.CORS_ORIGIN || "http://localhost:3000").trim(),
 };
+
+module.exports = { env };

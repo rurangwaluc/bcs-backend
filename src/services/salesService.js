@@ -16,11 +16,14 @@ const { eq, and, inArray } = require("drizzle-orm");
  * Statuses:
  * - DRAFT
  * - FULFILLED
- * - PENDING
+ * - PENDING                (UI shows CREDIT)
  * - AWAITING_PAYMENT_RECORD
- * - COMPLETED (cashier flow, elsewhere)
+ * - COMPLETED
  * - CANCELLED
  */
+
+// Strict payment methods for seller marking PAID
+const PAYMENT_METHODS = new Set(["CASH", "MOMO", "BANK"]);
 
 function toInt(n) {
   const x = Number(n);
@@ -202,6 +205,7 @@ async function createSale({
         customerPhone: customerPhone ?? null,
         status: "DRAFT",
         totalAmount: saleDisc.totalAmount,
+        paymentMethod: null, // keep null at draft time
         note: note ?? null,
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -231,12 +235,6 @@ async function createSale({
   });
 }
 
-/**
- * ✅ Storekeeper fulfills a DRAFT sale:
- * - Checks inventoryBalances.qtyOnHand for each item
- * - Deducts inventory
- * - Updates sale.status -> FULFILLED
- */
 async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
   return db.transaction(async (tx) => {
     const saleRows = await tx
@@ -251,7 +249,7 @@ async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
       throw err;
     }
 
-    if (String(sale.status) !== "DRAFT") {
+    if (String(sale.status).toUpperCase() !== "DRAFT") {
       const err = new Error("Invalid status");
       err.code = "BAD_STATUS";
       err.debug = { current: sale.status, required: "DRAFT" };
@@ -269,7 +267,6 @@ async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
       throw err;
     }
 
-    // Ensure inventory rows exist + validate enough stock + deduct
     for (const it of items) {
       const pid = Number(it.productId);
       const qty = toInt(it.qty);
@@ -296,11 +293,7 @@ async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
       if (newQty < 0) {
         const err = new Error("Insufficient inventory stock");
         err.code = "INSUFFICIENT_INVENTORY_STOCK";
-        err.debug = {
-          productId: pid,
-          available: currentQty,
-          needed: qty,
-        };
+        err.debug = { productId: pid, available: currentQty, needed: qty };
         throw err;
       }
 
@@ -340,15 +333,25 @@ async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
 
 /**
  * ✅ Seller finalizes AFTER fulfill:
- * - Only changes status (NO stock movement)
- *
- * ✅ IMPORTANT: idempotent
- * - if already PENDING and seller marks PENDING again -> return sale, no error
- * - if already AWAITING_PAYMENT_RECORD and seller marks PAID again -> return sale, no error
- * - allow switching between PENDING <-> AWAITING_PAYMENT_RECORD (business choice)
+ * - If status=PAID => sale.status -> AWAITING_PAYMENT_RECORD AND persist paymentMethod
+ * - If status=PENDING => sale.status -> PENDING AND clear paymentMethod
  */
-async function markSale({ locationId, sellerId, saleId, status }) {
+async function markSale({
+  locationId,
+  saleId,
+  status,
+  paymentMethod,
+  userId, // controller uses this
+  sellerId, // support old callers
+}) {
   return db.transaction(async (tx) => {
+    const actorId = Number(sellerId ?? userId);
+    if (!Number.isInteger(actorId) || actorId <= 0) {
+      const err = new Error("Invalid user");
+      err.code = "BAD_USER";
+      throw err;
+    }
+
     const saleRows = await tx
       .select()
       .from(sales)
@@ -361,19 +364,14 @@ async function markSale({ locationId, sellerId, saleId, status }) {
       throw err;
     }
 
-    if (Number(sale.sellerId) !== Number(sellerId)) {
+    if (Number(sale.sellerId) !== actorId) {
       const err = new Error("Forbidden");
       err.code = "FORBIDDEN";
       throw err;
     }
 
-    const current = String(sale.status);
-
-    // Allowed states to "mark" from:
-    // - FULFILLED: first time marking after storekeeper fulfilled
-    // - PENDING / AWAITING_PAYMENT_RECORD: allow re-mark or switching (idempotent + flexibility)
+    const current = String(sale.status).toUpperCase();
     const allowed = ["FULFILLED", "PENDING", "AWAITING_PAYMENT_RECORD"];
-
     if (!allowed.includes(current)) {
       const err = new Error("Invalid status");
       err.code = "BAD_STATUS";
@@ -381,41 +379,77 @@ async function markSale({ locationId, sellerId, saleId, status }) {
       throw err;
     }
 
-    const nextStatus =
-      String(status).toUpperCase() === "PAID"
-        ? "AWAITING_PAYMENT_RECORD"
-        : "PENDING";
+    const raw = String(status || "").toUpperCase();
+    const nextStatus = raw === "PAID" ? "AWAITING_PAYMENT_RECORD" : "PENDING";
 
-    // ✅ Idempotent: no-op if already in desired status
+    // Validate + normalize method for PAID
+    let methodSafe = null;
+    if (raw === "PAID") {
+      const m = String(paymentMethod || "").toUpperCase();
+      if (!PAYMENT_METHODS.has(m)) {
+        const err = new Error("Invalid payment method");
+        err.code = "BAD_PAYMENT_METHOD";
+        err.debug = { paymentMethod };
+        throw err;
+      }
+      methodSafe = m;
+    }
+
+    // If already in target status, still ensure method consistency for paid-like
     if (current === nextStatus) {
+      if (nextStatus === "AWAITING_PAYMENT_RECORD") {
+        const existing = String(sale.paymentMethod || "").toUpperCase();
+        if (methodSafe && existing !== methodSafe) {
+          const [patched] = await tx
+            .update(sales)
+            .set({ paymentMethod: methodSafe, updatedAt: new Date() })
+            .where(eq(sales.id, saleId))
+            .returning();
+
+          await tx.insert(auditLogs).values({
+            locationId,
+            userId: actorId,
+            action: "SALE_MARK",
+            entity: "sale",
+            entityId: saleId,
+            description: `Sale #${saleId} payment method updated -> ${methodSafe}`,
+          });
+
+          return patched;
+        }
+      }
       return sale;
     }
 
+    const patch = {
+      status: nextStatus,
+      updatedAt: new Date(),
+      paymentMethod:
+        nextStatus === "AWAITING_PAYMENT_RECORD" ? methodSafe : null,
+    };
+
     const [updated] = await tx
       .update(sales)
-      .set({ status: nextStatus, updatedAt: new Date() })
+      .set(patch)
       .where(eq(sales.id, saleId))
       .returning();
 
     await tx.insert(auditLogs).values({
       locationId,
-      userId: sellerId,
+      userId: actorId,
       action: "SALE_MARK",
       entity: "sale",
       entityId: saleId,
-      description: `Sale #${saleId} marked ${status} -> ${nextStatus}`,
+      description:
+        nextStatus === "AWAITING_PAYMENT_RECORD"
+          ? `Sale #${saleId} marked PAID -> ${nextStatus} (method=${methodSafe})`
+          : `Sale #${saleId} marked CREDIT -> ${nextStatus}`,
     });
 
     return updated;
   });
 }
 
-/**
- * Cancel rules:
- * - If COMPLETED => cannot cancel
- * - If already fulfilled (or later), restore inventory (because inventory was deducted at fulfill)
- * - If still DRAFT, no inventory change needed
- */
 async function cancelSale({ locationId, userId, saleId, reason }) {
   return db.transaction(async (tx) => {
     const saleRows = await tx
@@ -430,7 +464,7 @@ async function cancelSale({ locationId, userId, saleId, reason }) {
       throw err;
     }
 
-    if (String(sale.status) === "COMPLETED") {
+    if (String(sale.status).toUpperCase() === "COMPLETED") {
       const err = new Error("Cannot cancel completed sale");
       err.code = "BAD_STATUS";
       throw err;
@@ -440,7 +474,7 @@ async function cancelSale({ locationId, userId, saleId, reason }) {
       "FULFILLED",
       "PENDING",
       "AWAITING_PAYMENT_RECORD",
-    ].includes(String(sale.status));
+    ].includes(String(sale.status).toUpperCase());
 
     if (needsRestore) {
       const items = await tx

@@ -110,37 +110,34 @@ async function fulfillSale(request, reply) {
 }
 
 async function markSale(request, reply) {
-  const saleId = Number(request.params.id);
-
-  const parsed = markSaleSchema.safeParse(request.body);
+  const parsed = markSaleSchema.safeParse(request.body || {});
   if (!parsed.success) {
     return reply.status(400).send({
-      error: "Invalid payload",
+      error: "Invalid body",
       details: parsed.error.flatten(),
     });
   }
 
+  const saleId = Number(request.params.id);
+  if (!Number.isInteger(saleId) || saleId <= 0) {
+    return reply.status(400).send({ error: "Invalid sale id" });
+  }
+
   try {
-    const sale = await salesService.markSale({
-      locationId: request.user.locationId,
-      sellerId: request.user.id,
+    const data = await salesService.markSale({
       saleId,
+      userId: request.user.id,
+      locationId: request.user.locationId,
       status: parsed.data.status,
+      paymentMethod: parsed.data.paymentMethod, // ✅ NEW
     });
 
-    return reply.send({ ok: true, sale });
+    return reply.send({ ok: true, sale: data });
   } catch (e) {
-    if (e.code === "NOT_FOUND")
-      return reply.status(404).send({ error: "Sale not found" });
-    if (e.code === "FORBIDDEN")
-      return reply.status(403).send({ error: "Forbidden" });
-    if (e.code === "BAD_STATUS")
-      return reply
-        .status(409)
-        .send({ error: "Invalid sale status", debug: e.debug });
-
     request.log.error(e);
-    return reply.status(500).send({ error: "Internal Server Error" });
+    return reply.status(400).send({
+      error: e?.message || "Failed to mark sale",
+    });
   }
 }
 

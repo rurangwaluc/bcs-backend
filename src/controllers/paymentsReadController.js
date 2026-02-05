@@ -1,3 +1,4 @@
+// backend/src/controllers/paymentsReadController.js
 const { z } = require("zod");
 const paymentsReadService = require("../services/paymentsReadService");
 
@@ -33,11 +34,37 @@ async function listPayments(request, reply) {
 }
 
 async function getPaymentsSummary(request, reply) {
-  const summary = await paymentsReadService.getPaymentsSummary({
-    locationId: request.user.locationId,
-  });
-
-  return reply.send({ ok: true, summary });
+  try {
+    const summary = await paymentsReadService.getPaymentsSummary({
+      locationId: request.user.locationId,
+    });
+    return reply.send({ ok: true, summary });
+  } catch (e) {
+    request.log.error(e);
+    return reply.status(500).send({
+      error: "Failed to load summary",
+      debug: e?.debug || e?.message || String(e),
+    });
+  }
 }
 
-module.exports = { listPayments, getPaymentsSummary };
+async function getPaymentsBreakdown(request, reply) {
+  try {
+    const breakdown = await paymentsReadService.getPaymentsBreakdown({
+      locationId: request.user.locationId,
+    });
+    return reply.send({ ok: true, breakdown });
+  } catch (e) {
+    request.log.error(e);
+    return reply.status(500).send({
+      error: "Failed to load breakdown",
+      debug: e?.debug || e?.message || String(e),
+    });
+  }
+}
+
+module.exports = {
+  listPayments,
+  getPaymentsSummary,
+  getPaymentsBreakdown,
+};

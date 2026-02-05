@@ -40,6 +40,7 @@ const createSaleSchema = z.object({
  */
 const markSaleSchema = z.object({
   status: z.enum(["PAID", "PENDING"]),
+  paymentMethod: z.enum(["CASH", "MOMO", "BANK"]).optional(),
 });
 
 const cancelSaleSchema = z.object({

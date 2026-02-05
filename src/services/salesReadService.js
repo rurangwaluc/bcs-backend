@@ -1,3 +1,4 @@
+// backend/src/services/salesReadService.js
 const { db } = require("../config/db");
 const { sql } = require("drizzle-orm");
 
@@ -10,6 +11,7 @@ async function getSaleById({ locationId, saleId }) {
       s.customer_id as "customerId",
       s.status,
       s.total_amount as "totalAmount",
+      s.payment_method as "paymentMethod",
       s.note,
       s.created_at as "createdAt",
       s.updated_at as "updatedAt",
@@ -59,8 +61,10 @@ async function listSales({ locationId, filters }) {
       s.status,
       s.total_amount as "totalAmount",
       s.created_at as "createdAt",
+      s.updated_at as "updatedAt",   -- ✅ ADD THIS
       s.seller_id as "sellerId",
       s.customer_id as "customerId",
+      s.payment_method as "paymentMethod",
       COALESCE(c.name, s.customer_name) as "customerName",
       COALESCE(c.phone, s.customer_phone) as "customerPhone"
     FROM sales s

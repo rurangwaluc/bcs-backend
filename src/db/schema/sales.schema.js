@@ -1,18 +1,28 @@
-const { pgTable, serial, integer, varchar, timestamp, text } = require("drizzle-orm/pg-core");
+// backend/src/db/schema/sales.schema.js
+const {
+  pgTable,
+  serial,
+  integer,
+  varchar,
+  timestamp,
+  text,
+} = require("drizzle-orm/pg-core");
 
 const sales = pgTable("sales", {
   id: serial("id").primaryKey(),
   locationId: integer("location_id").notNull(),
 
   sellerId: integer("seller_id").notNull(),
-  customerId: integer("customer_id"), // optional for now
-  
+  customerId: integer("customer_id"),
+
   customerName: varchar("customer_name", { length: 255 }),
   customerPhone: varchar("customer_phone", { length: 40 }),
 
-
   status: varchar("status", { length: 40 }).notNull().default("DRAFT"),
   totalAmount: integer("total_amount").notNull().default(0),
+
+  // ✅ NEW: seller-selected method for this sale (optional)
+  paymentMethod: varchar("payment_method", { length: 30 }),
 
   note: text("note"),
 
@@ -21,7 +31,7 @@ const sales = pgTable("sales", {
 
   canceledAt: timestamp("canceled_at"),
   canceledBy: integer("canceled_by"),
-  cancelReason: text("cancel_reason")
+  cancelReason: text("cancel_reason"),
 });
 
 module.exports = { sales };

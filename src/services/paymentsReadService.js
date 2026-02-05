@@ -14,10 +14,6 @@ async function tryExecute(query) {
  * We SELECT * to avoid hard-failing on column name mismatches.
  * Then we normalize the row into the API shape:
  * { id, saleId, amount, method, recordedByUserId, createdAt }
- *
- * This supports many possible DB column styles:
- * - snake_case: sale_id, recorded_by_user_id, created_at, payment_method
- * - camelCase: saleId, recordedByUserId, createdAt, paymentMethod
  */
 function normalizePaymentRow(r) {
   if (!r) return null;
@@ -52,7 +48,6 @@ function normalizePaymentRow(r) {
 }
 
 async function listPayments({ locationId, limit = 100, offset = 0 }) {
-  // Variant A: snake_case where + order
   const qSnake = sql`
     select *
     from payments
@@ -62,7 +57,6 @@ async function listPayments({ locationId, limit = 100, offset = 0 }) {
     offset ${offset}
   `;
 
-  // Variant B: camelCase where + order
   const qCamel = sql`
     select *
     from payments
@@ -91,14 +85,27 @@ async function listPayments({ locationId, limit = 100, offset = 0 }) {
 }
 
 async function getPaymentsSummary({ locationId }) {
-  // Keep your previous logic (works already)
+  const todayStart = sql`date_trunc('day', now())`;
+  const yesterdayStart = sql`date_trunc('day', now()) - interval '1 day'`;
+
+  // snake_case
   const todaySnake = sql`
     select
       count(*)::int as "count",
       coalesce(sum(amount), 0)::int as "total"
     from payments
     where location_id = ${locationId}
-      and created_at >= date_trunc('day', now())
+      and created_at >= ${todayStart}
+  `;
+
+  const yesterdaySnake = sql`
+    select
+      count(*)::int as "count",
+      coalesce(sum(amount), 0)::int as "total"
+    from payments
+    where location_id = ${locationId}
+      and created_at >= ${yesterdayStart}
+      and created_at < ${todayStart}
   `;
 
   const allSnake = sql`
@@ -109,13 +116,24 @@ async function getPaymentsSummary({ locationId }) {
     where location_id = ${locationId}
   `;
 
+  // camelCase
   const todayCamel = sql`
     select
       count(*)::int as "count",
       coalesce(sum(amount), 0)::int as "total"
     from payments
     where "locationId" = ${locationId}
-      and "createdAt" >= date_trunc('day', now())
+      and "createdAt" >= ${todayStart}
+  `;
+
+  const yesterdayCamel = sql`
+    select
+      count(*)::int as "count",
+      coalesce(sum(amount), 0)::int as "total"
+    from payments
+    where "locationId" = ${locationId}
+      and "createdAt" >= ${yesterdayStart}
+      and "createdAt" < ${todayStart}
   `;
 
   const allCamel = sql`
@@ -128,9 +146,15 @@ async function getPaymentsSummary({ locationId }) {
 
   try {
     const t = rowsOf(await tryExecute(todaySnake))[0] || { count: 0, total: 0 };
+    const y = rowsOf(await tryExecute(yesterdaySnake))[0] || {
+      count: 0,
+      total: 0,
+    };
     const a = rowsOf(await tryExecute(allSnake))[0] || { count: 0, total: 0 };
+
     return {
       today: { count: Number(t.count || 0), total: Number(t.total || 0) },
+      yesterday: { count: Number(y.count || 0), total: Number(y.total || 0) },
       allTime: { count: Number(a.count || 0), total: Number(a.total || 0) },
     };
   } catch (e1) {
@@ -139,9 +163,15 @@ async function getPaymentsSummary({ locationId }) {
         count: 0,
         total: 0,
       };
+      const y = rowsOf(await tryExecute(yesterdayCamel))[0] || {
+        count: 0,
+        total: 0,
+      };
       const a = rowsOf(await tryExecute(allCamel))[0] || { count: 0, total: 0 };
+
       return {
         today: { count: Number(t.count || 0), total: Number(t.total || 0) },
+        yesterday: { count: Number(y.count || 0), total: Number(y.total || 0) },
         allTime: { count: Number(a.count || 0), total: Number(a.total || 0) },
       };
     } catch (e2) {
@@ -152,4 +182,119 @@ async function getPaymentsSummary({ locationId }) {
   }
 }
 
-module.exports = { listPayments, getPaymentsSummary };
+async function _breakdownSnake({ locationId, window }) {
+  const todayStart = sql`date_trunc('day', now())`;
+  const yesterdayStart = sql`date_trunc('day', now()) - interval '1 day'`;
+
+  let where = sql`where location_id = ${locationId}`;
+  if (window === "today") {
+    where = sql`${where} and created_at >= ${todayStart}`;
+  } else if (window === "yesterday") {
+    where = sql`${where} and created_at >= ${yesterdayStart} and created_at < ${todayStart}`;
+  }
+
+  // Try common column names for method
+  const q1 = sql`
+    select
+      upper(coalesce(method::text, 'UNKNOWN')) as "method",
+      count(*)::int as "count",
+      coalesce(sum(amount), 0)::int as "total"
+    from payments
+    ${where}
+    group by 1
+    order by "total" desc
+  `;
+
+  const q2 = sql`
+    select
+      upper(coalesce(payment_method::text, 'UNKNOWN')) as "method",
+      count(*)::int as "count",
+      coalesce(sum(amount), 0)::int as "total"
+    from payments
+    ${where}
+    group by 1
+    order by "total" desc
+  `;
+
+  try {
+    return rowsOf(await tryExecute(q1));
+  } catch {
+    return rowsOf(await tryExecute(q2));
+  }
+}
+
+async function _breakdownCamel({ locationId, window }) {
+  const todayStart = sql`date_trunc('day', now())`;
+  const yesterdayStart = sql`date_trunc('day', now()) - interval '1 day'`;
+
+  let where = sql`where "locationId" = ${locationId}`;
+  if (window === "today") {
+    where = sql`${where} and "createdAt" >= ${todayStart}`;
+  } else if (window === "yesterday") {
+    where = sql`${where} and "createdAt" >= ${yesterdayStart} and "createdAt" < ${todayStart}`;
+  }
+
+  const q1 = sql`
+    select
+      upper(coalesce("method"::text, 'UNKNOWN')) as "method",
+      count(*)::int as "count",
+      coalesce(sum("amount"), 0)::int as "total"
+    from payments
+    ${where}
+    group by 1
+    order by "total" desc
+  `;
+
+  const q2 = sql`
+    select
+      upper(coalesce("paymentMethod"::text, 'UNKNOWN')) as "method",
+      count(*)::int as "count",
+      coalesce(sum("amount"), 0)::int as "total"
+    from payments
+    ${where}
+    group by 1
+    order by "total" desc
+  `;
+
+  try {
+    return rowsOf(await tryExecute(q1));
+  } catch {
+    return rowsOf(await tryExecute(q2));
+  }
+}
+
+async function getPaymentsBreakdown({ locationId }) {
+  async function run(window) {
+    try {
+      const rows = await _breakdownSnake({ locationId, window });
+      return rows.map((r) => ({
+        method: r?.method ?? "UNKNOWN",
+        count: Number(r?.count ?? 0),
+        total: Number(r?.total ?? 0),
+      }));
+    } catch (e1) {
+      try {
+        const rows = await _breakdownCamel({ locationId, window });
+        return rows.map((r) => ({
+          method: r?.method ?? "UNKNOWN",
+          count: Number(r?.count ?? 0),
+          total: Number(r?.total ?? 0),
+        }));
+      } catch (e2) {
+        const err = new Error("PAYMENTS_BREAKDOWN_QUERY_FAILED");
+        err.debug = { snakeError: e1?.message, camelError: e2?.message };
+        throw err;
+      }
+    }
+  }
+
+  const [today, yesterday, allTime] = await Promise.all([
+    run("today"),
+    run("yesterday"),
+    run("all"),
+  ]);
+
+  return { today, yesterday, allTime };
+}
+
+module.exports = { listPayments, getPaymentsSummary, getPaymentsBreakdown };
