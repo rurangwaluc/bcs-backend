@@ -19,6 +19,10 @@ const ACTIONS = {
   USER_UPDATE: "USER_UPDATE",
   USER_DELETE: "USER_DELETE",
 
+  // Dashboards (role-specific)
+  ADMIN_DASHBOARD_VIEW: "ADMIN_DASHBOARD_VIEW",
+  MANAGER_DASHBOARD_VIEW: "MANAGER_DASHBOARD_VIEW",
+
   // Legacy
   USER_MANAGE: "USER_MANAGE",
 
@@ -98,7 +102,7 @@ const ACTIONS = {
   STOCK_RELEASE_CONFIRM: "STOCK_RELEASE_CONFIRM",
   STOCK_RETURN_CONFIRM: "STOCK_RETURN_CONFIRM",
 
-  // ✅ Used by /requests/:id/release route (and policy)
+  // Used by /requests/:id/release route (and policy)
   STOCK_RELEASE_TO_SELLER: "STOCK_RELEASE_TO_SELLER",
 
   // Legacy
@@ -123,9 +127,6 @@ const ACTIONS = {
   SALE_FULFILL: "SALE_FULFILL",
   SALE_MARK: "SALE_MARK",
   SALE_CANCEL: "SALE_CANCEL",
-
-  // ✅ NEW (Option B): Storekeeper fulfills a draft sale (deduct inventory)
-  SALE_FULFILL: "SALE_FULFILL",
 
   // =====================
   // Payments / Cash
@@ -157,10 +158,10 @@ const ACTIONS = {
   CREDIT_CREATE: "CREDIT_CREATE",
   CREDIT_VIEW: "CREDIT_VIEW",
   CREDIT_DECIDE: "CREDIT_DECIDE",
+  CREDIT_SETTLE: "CREDIT_SETTLE", // ✅ keep as a real action (not just "legacy")
 
   // Legacy
   CREDIT_READ: "CREDIT_READ",
-  CREDIT_SETTLE: "CREDIT_SETTLE",
 
   // =====================
   // Refunds
@@ -201,10 +202,11 @@ ACTIONS.__ALIASES__ = {
   // Legacy “release” should satisfy the real release action.
   STOCK_REQUEST_RELEASE: ["STOCK_RELEASE_TO_SELLER", "STOCK_RELEASE_CONFIRM"],
 
+  // Credits legacy read -> view
   CREDIT_READ: ["CREDIT_VIEW"],
-  CREDIT_SETTLE: ["CREDIT_DECIDE"],
 
-  HOLDINGS_ADJUST: ["HOLDINGS_REQUEST_CREATE", "HOLDINGS_REQUEST_DECIDE"],
+  // ❌ IMPORTANT: DO NOT alias CREDIT_SETTLE to CREDIT_DECIDE.
+  // If you previously had a different legacy settle action name, alias THAT legacy name to CREDIT_SETTLE instead.
 };
 
 module.exports = Object.freeze(ACTIONS);

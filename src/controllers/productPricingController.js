@@ -4,8 +4,25 @@ const {
 } = require("../validators/productPricing.schema");
 const pricingService = require("../services/productPricingService");
 
+async function getProductsController(request, reply) {
+  try {
+    const products = await pricingService.getProducts({
+      locationId: request.user.locationId,
+    });
+
+    return reply.send({ ok: true, products });
+  } catch (e) {
+    request.log.error(e);
+    return reply.status(500).send({ error: "Internal Server Error" });
+  }
+}
+
 async function updateProductPricing(request, reply) {
   const productId = Number(request.params.id);
+
+  if (!Number.isFinite(productId)) {
+    return reply.status(400).send({ error: "Invalid product id" });
+  }
 
   const parsed = updateProductPricingSchema.safeParse(request.body);
   if (!parsed.success) {
@@ -29,6 +46,7 @@ async function updateProductPricing(request, reply) {
   } catch (e) {
     if (e.code === "BAD_PRICE")
       return reply.status(409).send({ error: e.message });
+
     if (e.code === "NOT_FOUND")
       return reply.status(404).send({ error: "Product not found" });
 
@@ -37,4 +55,7 @@ async function updateProductPricing(request, reply) {
   }
 }
 
-module.exports = { updateProductPricing };
+module.exports = {
+  getProductsController,
+  updateProductPricing,
+};

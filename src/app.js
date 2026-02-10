@@ -27,6 +27,9 @@ const {
   inventoryAdjustRequestsRoutes,
 } = require("./routes/inventoryAdjustRequests.routes");
 
+const { managerDashboardRoutes } = require("./routes/manager.dashboard.routes");
+const { adminDashboardRoutes } = require("./routes/adminDashboardRoutes");
+
 const { productPricingRoutes } = require("./routes/productPricing.routes");
 const { holdingsRoutes } = require("./routes/holdings.routes");
 const { requestsRoutes } = require("./routes/requests.routes");
@@ -91,6 +94,8 @@ function buildApp() {
   app.register(dashboardRoutes);
   app.register(ownerDashboardRoutes);
   app.register(ownerRoutes);
+  app.register(managerDashboardRoutes);
+  app.register(adminDashboardRoutes);
 
   // Users / messaging / audit
   app.register(usersRoutes);

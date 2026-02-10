@@ -4,6 +4,20 @@ const { products } = require("../db/schema/products.schema");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
 const { eq, and } = require("drizzle-orm");
 
+async function getProducts({ locationId }) {
+  if (!locationId) {
+    const err = new Error("Missing locationId");
+    err.code = "BAD_CONTEXT";
+    throw err;
+  }
+
+  return db
+    .select()
+    .from(products)
+    .where(eq(products.locationId, locationId))
+    .orderBy(products.name);
+}
+
 async function updatePricing({
   locationId,
   productId,
@@ -12,11 +26,9 @@ async function updatePricing({
   maxDiscountPercent,
   userId,
 }) {
-  // Safety: normalize numbers (including strings like "1200")
   const pp = Number(purchasePrice);
   const sp = Number(sellingPrice);
 
-  // If maxDiscountPercent is optional on UI, default to 0 safely
   const mdRaw =
     maxDiscountPercent === undefined || maxDiscountPercent === null
       ? 0
@@ -76,7 +88,6 @@ async function updatePricing({
     throw err;
   }
 
-  // ✅ CRITICAL FIX: include locationId to satisfy NOT NULL constraint
   await db.insert(auditLogs).values({
     locationId,
     userId,
@@ -89,4 +100,7 @@ async function updatePricing({
   return product;
 }
 
-module.exports = { updatePricing };
+module.exports = {
+  getProducts,
+  updatePricing,
+};

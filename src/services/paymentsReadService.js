@@ -47,6 +47,30 @@ function normalizePaymentRow(r) {
   return { id, saleId, amount, method, recordedByUserId, createdAt };
 }
 
+function normalizeMethodKey(method) {
+  const m = String(method || "")
+    .trim()
+    .toUpperCase();
+  if (m === "CASH") return "CASH";
+  if (m === "MOMO") return "MOMO";
+  if (m === "BANK") return "BANK";
+  if (m === "CARD") return "CARD";
+  return "OTHER";
+}
+
+function emptyBucket() {
+  return { CASH: 0, MOMO: 0, BANK: 0, CARD: 0, OTHER: 0 };
+}
+
+function bucketFromRows(rows) {
+  const b = emptyBucket();
+  for (const r of rows || []) {
+    const k = normalizeMethodKey(r?.method);
+    b[k] += Number(r?.total || 0);
+  }
+  return b;
+}
+
 async function listPayments({ locationId, limit = 100, offset = 0 }) {
   const qSnake = sql`
     select *
@@ -85,61 +109,67 @@ async function listPayments({ locationId, limit = 100, offset = 0 }) {
 }
 
 async function getPaymentsSummary({ locationId }) {
-  const todayStart = sql`date_trunc('day', now())`;
-  const yesterdayStart = sql`date_trunc('day', now()) - interval '1 day'`;
+  // IMPORTANT:
+  // Your UI is in Kigali (+02). If your DB timezone is UTC, date_trunc('day', now())
+  // may “shift” what counts as today near midnight.
+  //
+  // This uses Kigali time explicitly for consistent "today/yesterday" results.
+  const nowKigali = sql`(now() AT TIME ZONE 'Africa/Kigali')`;
+  const todayStartKigali = sql`date_trunc('day', ${nowKigali})`;
+  const yesterdayStartKigali = sql`${todayStartKigali} - interval '1 day'`;
 
   // snake_case
   const todaySnake = sql`
     select
       count(*)::int as "count",
-      coalesce(sum(amount), 0)::int as "total"
+      coalesce(sum(amount), 0)::bigint as "total"
     from payments
     where location_id = ${locationId}
-      and created_at >= ${todayStart}
+      and (created_at AT TIME ZONE 'Africa/Kigali') >= ${todayStartKigali}
   `;
 
   const yesterdaySnake = sql`
     select
       count(*)::int as "count",
-      coalesce(sum(amount), 0)::int as "total"
+      coalesce(sum(amount), 0)::bigint as "total"
     from payments
     where location_id = ${locationId}
-      and created_at >= ${yesterdayStart}
-      and created_at < ${todayStart}
+      and (created_at AT TIME ZONE 'Africa/Kigali') >= ${yesterdayStartKigali}
+      and (created_at AT TIME ZONE 'Africa/Kigali') < ${todayStartKigali}
   `;
 
   const allSnake = sql`
     select
       count(*)::int as "count",
-      coalesce(sum(amount), 0)::int as "total"
+      coalesce(sum(amount), 0)::bigint as "total"
     from payments
     where location_id = ${locationId}
   `;
 
-  // camelCase
+  // camelCase fallback
   const todayCamel = sql`
     select
       count(*)::int as "count",
-      coalesce(sum(amount), 0)::int as "total"
+      coalesce(sum("amount"), 0)::bigint as "total"
     from payments
     where "locationId" = ${locationId}
-      and "createdAt" >= ${todayStart}
+      and ("createdAt" AT TIME ZONE 'Africa/Kigali') >= ${todayStartKigali}
   `;
 
   const yesterdayCamel = sql`
     select
       count(*)::int as "count",
-      coalesce(sum(amount), 0)::int as "total"
+      coalesce(sum("amount"), 0)::bigint as "total"
     from payments
     where "locationId" = ${locationId}
-      and "createdAt" >= ${yesterdayStart}
-      and "createdAt" < ${todayStart}
+      and ("createdAt" AT TIME ZONE 'Africa/Kigali') >= ${yesterdayStartKigali}
+      and ("createdAt" AT TIME ZONE 'Africa/Kigali') < ${todayStartKigali}
   `;
 
   const allCamel = sql`
     select
       count(*)::int as "count",
-      coalesce(sum(amount), 0)::int as "total"
+      coalesce(sum("amount"), 0)::bigint as "total"
     from payments
     where "locationId" = ${locationId}
   `;
@@ -183,14 +213,15 @@ async function getPaymentsSummary({ locationId }) {
 }
 
 async function _breakdownSnake({ locationId, window }) {
-  const todayStart = sql`date_trunc('day', now())`;
-  const yesterdayStart = sql`date_trunc('day', now()) - interval '1 day'`;
+  const nowKigali = sql`(now() AT TIME ZONE 'Africa/Kigali')`;
+  const todayStartKigali = sql`date_trunc('day', ${nowKigali})`;
+  const yesterdayStartKigali = sql`${todayStartKigali} - interval '1 day'`;
 
   let where = sql`where location_id = ${locationId}`;
   if (window === "today") {
-    where = sql`${where} and created_at >= ${todayStart}`;
+    where = sql`${where} and (created_at AT TIME ZONE 'Africa/Kigali') >= ${todayStartKigali}`;
   } else if (window === "yesterday") {
-    where = sql`${where} and created_at >= ${yesterdayStart} and created_at < ${todayStart}`;
+    where = sql`${where} and (created_at AT TIME ZONE 'Africa/Kigali') >= ${yesterdayStartKigali} and (created_at AT TIME ZONE 'Africa/Kigali') < ${todayStartKigali}`;
   }
 
   // Try common column names for method
@@ -198,7 +229,7 @@ async function _breakdownSnake({ locationId, window }) {
     select
       upper(coalesce(method::text, 'UNKNOWN')) as "method",
       count(*)::int as "count",
-      coalesce(sum(amount), 0)::int as "total"
+      coalesce(sum(amount), 0)::bigint as "total"
     from payments
     ${where}
     group by 1
@@ -209,7 +240,7 @@ async function _breakdownSnake({ locationId, window }) {
     select
       upper(coalesce(payment_method::text, 'UNKNOWN')) as "method",
       count(*)::int as "count",
-      coalesce(sum(amount), 0)::int as "total"
+      coalesce(sum(amount), 0)::bigint as "total"
     from payments
     ${where}
     group by 1
@@ -224,21 +255,22 @@ async function _breakdownSnake({ locationId, window }) {
 }
 
 async function _breakdownCamel({ locationId, window }) {
-  const todayStart = sql`date_trunc('day', now())`;
-  const yesterdayStart = sql`date_trunc('day', now()) - interval '1 day'`;
+  const nowKigali = sql`(now() AT TIME ZONE 'Africa/Kigali')`;
+  const todayStartKigali = sql`date_trunc('day', ${nowKigali})`;
+  const yesterdayStartKigali = sql`${todayStartKigali} - interval '1 day'`;
 
   let where = sql`where "locationId" = ${locationId}`;
   if (window === "today") {
-    where = sql`${where} and "createdAt" >= ${todayStart}`;
+    where = sql`${where} and ("createdAt" AT TIME ZONE 'Africa/Kigali') >= ${todayStartKigali}`;
   } else if (window === "yesterday") {
-    where = sql`${where} and "createdAt" >= ${yesterdayStart} and "createdAt" < ${todayStart}`;
+    where = sql`${where} and ("createdAt" AT TIME ZONE 'Africa/Kigali') >= ${yesterdayStartKigali} and ("createdAt" AT TIME ZONE 'Africa/Kigali') < ${todayStartKigali}`;
   }
 
   const q1 = sql`
     select
       upper(coalesce("method"::text, 'UNKNOWN')) as "method",
       count(*)::int as "count",
-      coalesce(sum("amount"), 0)::int as "total"
+      coalesce(sum("amount"), 0)::bigint as "total"
     from payments
     ${where}
     group by 1
@@ -249,7 +281,7 @@ async function _breakdownCamel({ locationId, window }) {
     select
       upper(coalesce("paymentMethod"::text, 'UNKNOWN')) as "method",
       count(*)::int as "count",
-      coalesce(sum("amount"), 0)::int as "total"
+      coalesce(sum("amount"), 0)::bigint as "total"
     from payments
     ${where}
     group by 1
@@ -288,13 +320,25 @@ async function getPaymentsBreakdown({ locationId }) {
     }
   }
 
-  const [today, yesterday, allTime] = await Promise.all([
+  const [todayRows, yesterdayRows, allTimeRows] = await Promise.all([
     run("today"),
     run("yesterday"),
     run("all"),
   ]);
 
-  return { today, yesterday, allTime };
+  // ✅ Return both:
+  // - rows arrays (backward compatible)
+  // - buckets for dashboards: todayBucket.CASH etc
+  return {
+    today: todayRows,
+    yesterday: yesterdayRows,
+    allTime: allTimeRows,
+
+    // buckets for dashboard cards
+    todayBucket: bucketFromRows(todayRows),
+    yesterdayBucket: bucketFromRows(yesterdayRows),
+    allTimeBucket: bucketFromRows(allTimeRows),
+  };
 }
 
 module.exports = { listPayments, getPaymentsSummary, getPaymentsBreakdown };

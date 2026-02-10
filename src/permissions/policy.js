@@ -96,10 +96,11 @@ const policy = {
     ACTIONS.PAYMENT_RECORD,
     ACTIONS.PAYMENT_VIEW,
 
-    // Credit
+    // ✅ Credits (real-world: Admin can do all credit ops)
     ACTIONS.CREDIT_CREATE,
     ACTIONS.CREDIT_VIEW,
     ACTIONS.CREDIT_DECIDE,
+    ACTIONS.CREDIT_SETTLE,
 
     // Refunds
     ACTIONS.REFUND_CREATE,
@@ -123,7 +124,8 @@ const policy = {
 
     // Legacy support (kept)
     ACTIONS.CASH_LEDGER_MANAGE,
-    ACTIONS.CREDIT_SETTLE,
+
+    ACTIONS.ADMIN_DASHBOARD_VIEW,
   ],
 
   // Manager: pricing + oversight + approvals
@@ -163,7 +165,7 @@ const policy = {
     // Payments view
     ACTIONS.PAYMENT_VIEW,
 
-    // Credit decisions
+    // ✅ Credits: Manager approves/rejects, does NOT settle
     ACTIONS.CREDIT_VIEW,
     ACTIONS.CREDIT_DECIDE,
 
@@ -178,8 +180,7 @@ const policy = {
     // Uploads (view only)
     ACTIONS.UPLOAD_VIEW,
 
-    // Legacy support (kept)
-    ACTIONS.CREDIT_SETTLE,
+    ACTIONS.MANAGER_DASHBOARD_VIEW,
   ],
 
   // Store keeper: stock + requests + arrivals
@@ -215,7 +216,6 @@ const policy = {
 
     // ✅ NEW: Storekeeper fulfills sales (Option B)
     ACTIONS.SALE_VIEW,
-
     ACTIONS.SALE_FULFILL,
 
     // Uploads
@@ -247,6 +247,7 @@ const policy = {
     ACTIONS.SALE_VIEW,
     ACTIONS.SALE_MARK,
 
+    // ✅ Credits: Seller can request credit + track status
     ACTIONS.CREDIT_CREATE,
     ACTIONS.CREDIT_VIEW,
 
@@ -287,7 +288,8 @@ const policy = {
     // Uploads (view only)
     ACTIONS.UPLOAD_VIEW,
 
-    // Legacy support (kept)
+    // ✅ Credits: Cashier must SEE credits to settle them
+    ACTIONS.CREDIT_VIEW,
     ACTIONS.CREDIT_SETTLE,
 
     ACTIONS.REFUND_CREATE,
