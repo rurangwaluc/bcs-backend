@@ -38,10 +38,35 @@ const createSaleSchema = z.object({
  * Seller finalizes AFTER fulfill
  * (we keep body same as before)
  */
-const markSaleSchema = z.object({
-  status: z.enum(["PAID", "PENDING"]),
-  paymentMethod: z.enum(["CASH", "MOMO", "BANK"]).optional(),
-});
+const markSaleSchema = z
+  .object({
+    status: z.enum(["PAID", "PENDING"]),
+    paymentMethod: z.enum(["CASH", "MOMO", "BANK"]).optional(),
+  })
+  .superRefine((data, ctx) => {
+    // ✅ contract:
+    // - PAID => paymentMethod is REQUIRED
+    // - PENDING => paymentMethod MUST NOT be sent (optional, but we reject if present)
+    if (data.status === "PAID") {
+      if (!data.paymentMethod) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["paymentMethod"],
+          message: "paymentMethod is required when status is PAID",
+        });
+      }
+    }
+
+    if (data.status === "PENDING") {
+      if (data.paymentMethod != null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["paymentMethod"],
+          message: "paymentMethod must not be provided when status is PENDING",
+        });
+      }
+    }
+  });
 
 const cancelSaleSchema = z.object({
   reason: z.string().min(3),

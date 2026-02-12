@@ -8,6 +8,7 @@ const salesService = require("../services/salesService");
 
 async function createSale(request, reply) {
   const parsed = createSaleSchema.safeParse(request.body);
+
   if (!parsed.success) {
     return reply.status(400).send({
       error: "Invalid payload",
@@ -19,24 +20,63 @@ async function createSale(request, reply) {
     const sale = await salesService.createSale({
       locationId: request.user.locationId,
       sellerId: request.user.id,
+
       customerId: parsed.data.customerId,
       customerName: parsed.data.customerName,
       customerPhone: parsed.data.customerPhone,
+
       note: parsed.data.note,
       items: parsed.data.items,
+
       discountPercent: parsed.data.discountPercent,
       discountAmount: parsed.data.discountAmount,
     });
 
     return reply.send({ ok: true, sale });
   } catch (e) {
+    // ---------------------------
+    // Customer errors
+    // ---------------------------
+    if (e.code === "CUSTOMER_NOT_FOUND") {
+      return reply
+        .status(404)
+        .send({ error: "Customer not found", debug: e.debug });
+    }
+
+    // Your markSale uses MISSING_CUSTOMER, but createSale (as fixed) uses MISSING_CUSTOMER_FIELDS
+    if (e.code === "MISSING_CUSTOMER" || e.code === "MISSING_CUSTOMER_FIELDS") {
+      return reply.status(400).send({ error: e.message, debug: e.debug });
+    }
+
+    if (e.code === "CUSTOMER_CREATE_FAILED") {
+      return reply.status(500).send({
+        error: "Failed to create customer",
+        debug: e.debug,
+      });
+    }
+
+    // ---------------------------
+    // Items / products errors
+    // ---------------------------
+    if (e.code === "NO_ITEMS") {
+      return reply.status(400).send({ error: "No items" });
+    }
+
     if (e.code === "PRODUCT_NOT_FOUND") {
       return reply
         .status(404)
         .send({ error: "Product not found", debug: e.debug });
     }
-    if (e.code === "BAD_QTY")
-      return reply.status(400).send({ error: "Invalid qty" });
+
+    if (e.code === "BAD_QTY") {
+      return reply.status(400).send({ error: "Invalid qty", debug: e.debug });
+    }
+
+    if (e.code === "BAD_UNIT_PRICE") {
+      return reply
+        .status(400)
+        .send({ error: "Invalid unit price", debug: e.debug });
+    }
 
     if (e.code === "PRICE_TOO_HIGH") {
       return reply.status(409).send({
@@ -45,8 +85,11 @@ async function createSale(request, reply) {
       });
     }
 
-    if (e.code === "BAD_DISCOUNT")
-      return reply.status(409).send({ error: "Invalid discount" });
+    if (e.code === "BAD_DISCOUNT" || e.code === "BAD_DISCOUNT_PERCENT") {
+      return reply
+        .status(409)
+        .send({ error: "Invalid discount", debug: e.debug });
+    }
 
     if (e.code === "DISCOUNT_TOO_HIGH") {
       return reply.status(409).send({
@@ -62,8 +105,15 @@ async function createSale(request, reply) {
       });
     }
 
-    request.log.error(e);
-    return reply.status(500).send({ error: "Internal Server Error" });
+    // ---------------------------
+    // Fallback
+    // ---------------------------
+    request.log.error({ err: e }, "createSale failed");
+    return reply.status(500).send({
+      error: "Internal Server Error",
+      // optional: include code in non-prod to speed debugging
+      debug: { code: e?.code },
+    });
   }
 }
 
@@ -135,6 +185,10 @@ async function markSale(request, reply) {
     return reply.send({ ok: true, sale: data });
   } catch (e) {
     request.log.error(e);
+    if (e.code === "MISSING_CUSTOMER") {
+      return reply.status(409).send({ error: e.message });
+    }
+
     return reply.status(400).send({
       error: e?.message || "Failed to mark sale",
     });

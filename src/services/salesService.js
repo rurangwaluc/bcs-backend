@@ -5,7 +5,9 @@ const { saleItems } = require("../db/schema/sale_items.schema");
 const { products } = require("../db/schema/products.schema");
 const { inventoryBalances } = require("../db/schema/inventory.schema");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
-const { eq, and, inArray } = require("drizzle-orm");
+const { credits } = require("../db/schema/credits.schema");
+const { customers } = require("../db/schema/customers.schema");
+const { eq, and, inArray, sql } = require("drizzle-orm");
 
 /**
  * Option B (NO holdings):
@@ -80,6 +82,18 @@ function applySaleDiscount(subtotal, discountPercent, discountAmount) {
   };
 }
 
+// salesService.js (add helpers near top if not present)
+function normPhone(v) {
+  if (v == null) return "";
+  return String(v)
+    .trim()
+    .replace(/[\s\-()]/g, "");
+}
+function normName(v) {
+  if (v == null) return "";
+  return String(v).trim();
+}
+
 async function createSale({
   locationId,
   sellerId,
@@ -91,31 +105,84 @@ async function createSale({
   discountPercent,
   discountAmount,
 }) {
-  return db.transaction(async (tx) => {
-    const ids = [
-      ...new Set((items || []).map((x) => Number(x.productId)).filter(Boolean)),
-    ];
-    if (ids.length === 0) {
-      const err = new Error("No items");
-      err.code = "NO_ITEMS";
-      throw err;
-    }
+  // -------------------------
+  // Local helpers (stay inside to avoid mismatch)
+  // -------------------------
+  function normPhone(v) {
+    if (v == null) return "";
+    return String(v)
+      .trim()
+      .replace(/[\s\-()]/g, "");
+  }
+  function normName(v) {
+    if (v == null) return "";
+    return String(v).trim();
+  }
+  function toNote(v) {
+    const s = v == null ? "" : String(v);
+    const t = s.trim();
+    if (!t) return null;
+    return t.slice(0, 200);
+  }
+  function toId(v) {
+    const n = Number(v);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  }
 
+  const locId = toId(locationId);
+  const sellId = toId(sellerId);
+
+  if (!locId) {
+    const err = new Error("Invalid location");
+    err.code = "BAD_LOCATION";
+    throw err;
+  }
+  if (!sellId) {
+    const err = new Error("Invalid seller");
+    err.code = "BAD_SELLER";
+    throw err;
+  }
+
+  const typedName = normName(customerName);
+  const typedPhone = normPhone(customerPhone);
+
+  // If caller did not provide customerId, enforce phone+name for auto-create/link
+  // (You can relax this later if you want anonymous walk-in customers.)
+  const incomingCustomerId = toId(customerId);
+
+  // items validation early
+  const rawItems = Array.isArray(items) ? items : [];
+  const ids = [
+    ...new Set(rawItems.map((x) => Number(x?.productId)).filter((x) => x > 0)),
+  ];
+  if (ids.length === 0) {
+    const err = new Error("No items");
+    err.code = "NO_ITEMS";
+    throw err;
+  }
+
+  return db.transaction(async (tx) => {
+    // -------------------------
+    // 1) Load products
+    // -------------------------
     const prodRows = await tx
       .select()
       .from(products)
-      .where(
-        and(eq(products.locationId, locationId), inArray(products.id, ids)),
-      );
+      .where(and(eq(products.locationId, locId), inArray(products.id, ids)));
 
     const prodMap = new Map(prodRows.map((p) => [Number(p.id), p]));
 
+    // -------------------------
+    // 2) Build lines + totals (enforce discount rules)
+    // -------------------------
     let strictMaxDisc = 100;
     const lines = [];
     let subtotal = 0;
 
-    for (const it of items) {
-      const pid = Number(it.productId);
+    for (const it of rawItems) {
+      const pid = Number(it?.productId);
+      if (!pid) continue;
+
       const prod = prodMap.get(pid);
       if (!prod) {
         const err = new Error("Product not found");
@@ -124,16 +191,26 @@ async function createSale({
         throw err;
       }
 
-      const qty = toInt(it.qty);
+      const qty = toInt(it?.qty);
       if (qty <= 0) {
         const err = new Error("Invalid qty");
         err.code = "BAD_QTY";
+        err.debug = { productId: pid, qty: it?.qty };
         throw err;
       }
 
-      const sellingPrice = toInt(prod.sellingPrice);
+      const sellingPrice = toInt(prod.sellingPrice ?? prod.selling_price ?? 0);
+
+      // Unit price: default to sellingPrice if not provided
       const requestedUnit =
-        it.unitPrice == null ? sellingPrice : toInt(it.unitPrice);
+        it?.unitPrice == null ? sellingPrice : toInt(it.unitPrice);
+
+      if (requestedUnit < 0) {
+        const err = new Error("Invalid unit price");
+        err.code = "BAD_UNIT_PRICE";
+        err.debug = { productId: pid, requestedUnit };
+        throw err;
+      }
 
       if (requestedUnit > sellingPrice) {
         const err = new Error("Unit price cannot be above selling price");
@@ -142,11 +219,21 @@ async function createSale({
         throw err;
       }
 
-      const itemMax = clamp(toPct(prod.maxDiscountPercent ?? 0), 0, 100);
+      const itemMax = clamp(
+        toPct(prod.maxDiscountPercent ?? prod.max_discount_percent ?? 0),
+        0,
+        100,
+      );
       strictMaxDisc = Math.min(strictMaxDisc, itemMax);
 
       const itemPct =
-        it.discountPercent == null ? 0 : toPct(it.discountPercent);
+        it?.discountPercent == null ? 0 : toPct(it.discountPercent);
+      if (itemPct < 0) {
+        const err = new Error("Invalid discount percent");
+        err.code = "BAD_DISCOUNT_PERCENT";
+        err.debug = { productId: pid, discountPercent: itemPct };
+        throw err;
+      }
 
       if (itemPct > itemMax) {
         const err = new Error("Discount percent exceeds allowed maximum");
@@ -163,12 +250,13 @@ async function createSale({
         qty,
         unitPrice: requestedUnit,
         discountPercent: itemPct,
-        discountAmount: it.discountAmount,
+        discountAmount: it?.discountAmount,
       });
 
       if (line.lineTotal < 0) {
         const err = new Error("Invalid discount");
         err.code = "BAD_DISCOUNT";
+        err.debug = { productId: pid };
         throw err;
       }
 
@@ -182,7 +270,19 @@ async function createSale({
       });
     }
 
+    if (!lines.length) {
+      const err = new Error("No items");
+      err.code = "NO_ITEMS";
+      throw err;
+    }
+
     const salePct = discountPercent == null ? 0 : toPct(discountPercent);
+    if (salePct < 0) {
+      const err = new Error("Invalid sale discount percent");
+      err.code = "BAD_SALE_DISCOUNT_PERCENT";
+      throw err;
+    }
+
     if (salePct > strictMaxDisc) {
       const err = new Error("Sale discount percent exceeds allowed maximum");
       err.code = "SALE_DISCOUNT_TOO_HIGH";
@@ -195,20 +295,114 @@ async function createSale({
 
     const saleDisc = applySaleDiscount(subtotal, salePct, discountAmount);
 
+    // -------------------------
+    // 3) Resolve customer (prefer explicit customerId; else find-or-create by phone)
+    // -------------------------
+    let effectiveCustomerId = incomingCustomerId;
+
+    // If caller provided customerId, verify it belongs to location
+    if (effectiveCustomerId) {
+      const rows = await tx
+        .select()
+        .from(customers)
+        .where(
+          and(
+            eq(customers.locationId, locId),
+            eq(customers.id, effectiveCustomerId),
+          ),
+        );
+
+      if (!rows[0]) {
+        const err = new Error("Customer not found");
+        err.code = "CUSTOMER_NOT_FOUND";
+        err.debug = { customerId: effectiveCustomerId };
+        throw err;
+      }
+    } else {
+      // No customerId => we can link/create by phone
+      if (!typedPhone || !typedName) {
+        // keep it strict because your CREDIT flow requires customer linkage
+        const err = new Error("Customer name and phone are required");
+        err.code = "MISSING_CUSTOMER_FIELDS";
+        err.debug = { customerName: !!typedName, customerPhone: !!typedPhone };
+        throw err;
+      }
+
+      // Find by phone (location scoped)
+      const existing = await tx
+        .select()
+        .from(customers)
+        .where(
+          and(eq(customers.locationId, locId), eq(customers.phone, typedPhone)),
+        );
+
+      if (existing[0]) {
+        effectiveCustomerId = Number(existing[0].id);
+
+        // Optionally update name if improved
+        if (typedName && String(existing[0].name || "").trim() !== typedName) {
+          await tx
+            .update(customers)
+            .set({ name: typedName, updatedAt: new Date() })
+            .where(eq(customers.id, existing[0].id));
+        }
+      } else {
+        // Create customer (race-safe: if unique exists on (locationId, phone), this will avoid duplicates)
+        // 1) attempt insert
+        await tx
+          .insert(customers)
+          .values({
+            locationId: locId,
+            name: typedName,
+            phone: typedPhone,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .onConflictDoNothing();
+
+        // 2) re-select (works whether inserted by us or another concurrent request)
+        const after = await tx
+          .select()
+          .from(customers)
+          .where(
+            and(
+              eq(customers.locationId, locId),
+              eq(customers.phone, typedPhone),
+            ),
+          );
+
+        if (!after[0]) {
+          const err = new Error("Failed to create customer");
+          err.code = "CUSTOMER_CREATE_FAILED";
+          throw err;
+        }
+
+        effectiveCustomerId = Number(after[0].id);
+      }
+    }
+
+    // -------------------------
+    // 4) Insert sale + items
+    // -------------------------
+    const now = new Date();
     const [sale] = await tx
       .insert(sales)
       .values({
-        locationId,
-        sellerId,
-        customerId: customerId || null,
-        customerName: customerName ?? null,
-        customerPhone: customerPhone ?? null,
+        locationId: locId,
+        sellerId: sellId,
+
+        customerId: effectiveCustomerId || null,
+
+        // Snapshot fields (normalized)
+        customerName: typedName || null,
+        customerPhone: typedPhone || null,
+
         status: "DRAFT",
         totalAmount: saleDisc.totalAmount,
-        paymentMethod: null, // keep null at draft time
-        note: note ?? null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        paymentMethod: null,
+        note: toNote(note),
+        createdAt: now,
+        updatedAt: now,
       })
       .returning();
 
@@ -223,8 +417,8 @@ async function createSale({
     }
 
     await tx.insert(auditLogs).values({
-      locationId,
-      userId: sellerId,
+      locationId: locId,
+      userId: sellId,
       action: "SALE_CREATE",
       entity: "sale",
       entityId: sale.id,
@@ -234,7 +428,6 @@ async function createSale({
     return sale;
   });
 }
-
 async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
   return db.transaction(async (tx) => {
     const saleRows = await tx
@@ -335,6 +528,10 @@ async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
  * ✅ Seller finalizes AFTER fulfill:
  * - If status=PAID => sale.status -> AWAITING_PAYMENT_RECORD AND persist paymentMethod
  * - If status=PENDING => sale.status -> PENDING AND clear paymentMethod
+ *
+ * ✅ CREDIT rule:
+ * - When seller marks CREDIT (PENDING), the system auto-creates a credit row
+ * - Uses DB unique index (location_id, sale_id) to avoid duplicates
  */
 async function markSale({
   locationId,
@@ -364,6 +561,7 @@ async function markSale({
       throw err;
     }
 
+    // Only the seller who created it can mark
     if (Number(sale.sellerId) !== actorId) {
       const err = new Error("Forbidden");
       err.code = "FORBIDDEN";
@@ -382,7 +580,7 @@ async function markSale({
     const raw = String(status || "").toUpperCase();
     const nextStatus = raw === "PAID" ? "AWAITING_PAYMENT_RECORD" : "PENDING";
 
-    // Validate + normalize method for PAID
+    // Validate + normalize method ONLY for PAID
     let methodSafe = null;
     if (raw === "PAID") {
       const m = String(paymentMethod || "").toUpperCase();
@@ -421,6 +619,7 @@ async function markSale({
       return sale;
     }
 
+    // Update sale status + paymentMethod (only set when PAID)
     const patch = {
       status: nextStatus,
       updatedAt: new Date(),
@@ -433,6 +632,37 @@ async function markSale({
       .set(patch)
       .where(eq(sales.id, saleId))
       .returning();
+
+    /**
+     * ✅ If marked CREDIT (PENDING), auto-create credit row.
+     * Lock: credit must have customerId, so sale must be linked to a customer.
+     */
+    if (nextStatus === "PENDING") {
+      if (!sale.customerId) {
+        const err = new Error(
+          "Credit requires a customer. Select/create customer first.",
+        );
+        err.code = "MISSING_CUSTOMER";
+        throw err;
+      }
+
+      // ✅ Race-safe: rely on unique index (location_id, sale_id)
+      // Your schema already has:
+      // uniqueIndex("credits_sale_location_unique").on(t.locationId, t.saleId)
+      await tx
+        .insert(credits)
+        .values({
+          locationId,
+          saleId,
+          customerId: sale.customerId,
+          amount: sale.totalAmount,
+          status: "OPEN",
+          createdBy: actorId,
+          note: sale.note ?? null,
+          createdAt: new Date(),
+        })
+        .onConflictDoNothing();
+    }
 
     await tx.insert(auditLogs).values({
       locationId,

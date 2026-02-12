@@ -1,8 +1,11 @@
+// backend/src/controllers/customersController.js
 const {
   createCustomerSchema,
   searchCustomerSchema,
+  listCustomersQuerySchema,
   customerHistoryQuerySchema,
 } = require("../validators/customers.schema");
+
 const customerService = require("../services/customerService");
 const { customerHistory } = require("../services/customerHistoryService");
 
@@ -29,12 +32,19 @@ async function createCustomer(request, reply) {
 
 async function searchCustomers(request, reply) {
   const parsed = searchCustomerSchema.safeParse(request.query);
-  if (!parsed.success)
+  if (!parsed.success) {
     return reply
       .status(400)
       .send({ error: "Invalid query", details: parsed.error.flatten() });
+  }
 
-  const isOwner = String(request.user?.role || "").toLowerCase() === "owner";
+  const role = String(request.user?.role || "").toLowerCase();
+  const isOwner = role === "owner";
+
+  if (!isOwner && !request.user?.locationId) {
+    return reply.status(400).send({ error: "Missing user location" });
+  }
+
   const effectiveLocationId = isOwner
     ? (parsed.data.locationId ?? null)
     : request.user.locationId;
@@ -53,12 +63,19 @@ async function getCustomerHistory(request, reply) {
     return reply.status(400).send({ error: "Invalid customer id" });
 
   const q = customerHistoryQuerySchema.safeParse(request.query);
-  if (!q.success)
+  if (!q.success) {
     return reply
       .status(400)
       .send({ error: "Invalid query", details: q.error.flatten() });
+  }
 
-  const isOwner = String(request.user?.role || "").toLowerCase() === "owner";
+  const role = String(request.user?.role || "").toLowerCase();
+  const isOwner = role === "owner";
+
+  if (!isOwner && !request.user?.locationId) {
+    return reply.status(400).send({ error: "Missing user location" });
+  }
+
   const effectiveLocationId = isOwner
     ? (q.data.locationId ?? null)
     : request.user.locationId;
@@ -69,13 +86,44 @@ async function getCustomerHistory(request, reply) {
     limit: q.data.limit ?? 50,
   });
 
-  // backward compatible response:
   return reply.send({
     ok: true,
     customerId,
-    sales: history.rows, // old name (sales-only) but now richer per-sale rows
-    totals: history.totals, // new
+    sales: history.rows,
+    totals: history.totals,
   });
 }
 
-module.exports = { createCustomer, searchCustomers, getCustomerHistory };
+async function listCustomers(request, reply) {
+  const q = listCustomersQuerySchema.safeParse(request.query || {});
+  if (!q.success) {
+    return reply
+      .status(400)
+      .send({ error: "Invalid query", details: q.error.flatten() });
+  }
+
+  const role = String(request.user?.role || "").toLowerCase();
+  const isOwner = role === "owner";
+
+  if (!isOwner && !request.user?.locationId) {
+    return reply.status(400).send({ error: "Missing user location" });
+  }
+
+  const effectiveLocationId = isOwner
+    ? (q.data.locationId ?? null)
+    : request.user.locationId;
+
+  const customers = await customerService.listCustomers({
+    locationId: effectiveLocationId,
+    limit: q.data.limit ?? 50,
+  });
+
+  return reply.send({ ok: true, customers });
+}
+
+module.exports = {
+  createCustomer,
+  listCustomers,
+  searchCustomers,
+  getCustomerHistory,
+};

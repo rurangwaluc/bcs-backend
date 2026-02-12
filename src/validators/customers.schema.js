@@ -1,3 +1,4 @@
+// backend/src/validators/customers.schema.js
 const { z } = require("zod");
 
 const createCustomerSchema = z.object({
@@ -12,8 +13,13 @@ const searchCustomerSchema = z.object({
   locationId: z.coerce.number().int().positive().optional(),
 });
 
+// ✅ REQUIRED because controller uses it
+const listCustomersQuerySchema = z.object({
+  locationId: z.coerce.number().int().positive().optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+});
+
 const customerHistoryQuerySchema = z.object({
-  // optional for owner multi-location; ignored for non-owner
   locationId: z.coerce.number().int().positive().optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
 });
@@ -21,5 +27,6 @@ const customerHistoryQuerySchema = z.object({
 module.exports = {
   createCustomerSchema,
   searchCustomerSchema,
+  listCustomersQuerySchema,
   customerHistoryQuerySchema,
 };
