@@ -1,16 +1,16 @@
 // backend/src/services/creditReadService.js
-// Credit read-only queries with real-world filtering + cursor pagination.
+// Credit read-only queries with cursor pagination.
 
 const { db } = require("../config/db");
 const { sql } = require("drizzle-orm");
 
 /**
  * Cursor pagination rule:
- * - We sort by c.id DESC
+ * - Sort by c.id DESC
  * - If cursor is provided, return rows with c.id < cursor
  *
  * Filters:
- * - status: OPEN / SETTLED (based on your schema)
+ * - status: PENDING / APPROVED / REJECTED / SETTLED (or empty for all)
  * - q: searches customer name/phone
  * - limit: max 200
  */
@@ -25,6 +25,8 @@ async function listCredits({
   const pattern = q ? `%${String(q).trim()}%` : null;
   const cur = cursor ? Number(cursor) : null;
 
+  const st = status ? String(status).trim().toUpperCase() : "";
+
   const res = await db.execute(sql`
     SELECT
       c.id,
@@ -38,6 +40,8 @@ async function listCredits({
       c.created_by as "createdBy",
       c.approved_by as "approvedBy",
       c.approved_at as "approvedAt",
+      c.rejected_by as "rejectedBy",
+      c.rejected_at as "rejectedAt",
       c.settled_by as "settledBy",
       c.settled_at as "settledAt",
       c.note,
@@ -45,7 +49,7 @@ async function listCredits({
     FROM credits c
     JOIN customers cu ON cu.id = c.customer_id
     WHERE c.location_id = ${locationId}
-      ${status ? sql`AND c.status = ${status}` : sql``}
+      ${st ? sql`AND c.status = ${st}` : sql``}
       ${pattern ? sql`AND (cu.name ILIKE ${pattern} OR cu.phone ILIKE ${pattern})` : sql``}
       ${cur ? sql`AND c.id < ${cur}` : sql``}
     ORDER BY c.id DESC
@@ -60,7 +64,7 @@ async function listCredits({
 
 async function getCreditById({ locationId, creditId }) {
   const id = Number(creditId);
-  if (!id) return null;
+  if (!Number.isInteger(id) || id <= 0) return null;
 
   const res = await db.execute(sql`
     SELECT
@@ -73,6 +77,8 @@ async function getCreditById({ locationId, creditId }) {
       c.created_by as "createdBy",
       c.approved_by as "approvedBy",
       c.approved_at as "approvedAt",
+      c.rejected_by as "rejectedBy",
+      c.rejected_at as "rejectedAt",
       c.settled_by as "settledBy",
       c.settled_at as "settledAt",
       c.note,

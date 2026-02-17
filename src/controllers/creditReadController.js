@@ -1,66 +1,77 @@
 // backend/src/controllers/creditReadController.js
 
 const creditReadService = require("../services/creditReadService");
+const creditService = require("../services/creditService");
 
-function toInt(v, def = null) {
-  if (v === undefined || v === null || v === "") return def;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : def;
-}
-
-async function getCredit(request, reply) {
-  const id = toInt(request.params.id, null);
-  if (!id) return reply.status(400).send({ error: "Invalid credit id" });
-
-  const credit = await creditReadService.getCreditById({
-    locationId: request.user.locationId,
-    creditId: id,
-  });
-
-  if (!credit) return reply.status(404).send({ error: "Credit not found" });
-  return reply.send({ ok: true, credit });
-}
-
+/**
+ * GET /credits?status=&q=&limit=&cursor=
+ * Used by CreditsPanel (pagination + filters)
+ */
 async function listCredits(request, reply) {
-  const status = request.query?.status ? String(request.query.status) : null; // OPEN / SETTLED
-  const q = request.query?.q ? String(request.query.q).trim() : null;
+  const { status, q, limit, cursor } = request.query || {};
 
-  const limit = Math.min(200, Math.max(1, Number(request.query?.limit || 50)));
-  const cursor = toInt(request.query?.cursor, null);
+  try {
+    const out = await creditReadService.listCredits({
+      locationId: request.user.locationId,
+      status: status ? String(status).trim().toUpperCase() : "",
+      q: q ? String(q) : "",
+      limit: limit != null ? Number(limit) : 50,
+      cursor: cursor != null ? cursor : null,
+    });
 
-  const result = await creditReadService.listCredits({
-    locationId: request.user.locationId,
-    status,
-    q,
-    limit,
-    cursor,
-  });
-
-  return reply.send({
-    ok: true,
-    rows: result.rows,
-    nextCursor: result.nextCursor,
-  });
+    return reply.send(out);
+  } catch (e) {
+    request.log.error({ err: e }, "listCredits failed");
+    return reply.status(500).send({ error: "Internal Server Error" });
+  }
 }
 
+/**
+ * GET /credits/:id
+ * Used by CreditsPanel detail view
+ */
+async function getCredit(request, reply) {
+  const creditId = Number(request.params.id);
+  if (!Number.isInteger(creditId) || creditId <= 0) {
+    return reply.status(400).send({ error: "Invalid credit id" });
+  }
+
+  try {
+    const credit = await creditReadService.getCreditById({
+      locationId: request.user.locationId,
+      creditId,
+    });
+
+    if (!credit) return reply.status(404).send({ error: "Credit not found" });
+
+    return reply.send({ ok: true, credit });
+  } catch (e) {
+    request.log.error({ err: e }, "getCredit failed");
+    return reply.status(500).send({ error: "Internal Server Error" });
+  }
+}
+
+/**
+ * GET /credits/open
+ * Admin dashboard uses this for "open credits".
+ *
+ * In your new lifecycle, "open" usually means:
+ * - PENDING + APPROVED (not rejected, not settled)
+ */
 async function listOpenCredits(request, reply) {
-  const q = request.query?.q ? String(request.query.q).trim() : null;
-  const limit = Math.min(200, Math.max(1, Number(request.query?.limit || 50)));
-  const cursor = toInt(request.query?.cursor, null);
+  const q = request.query?.q ? String(request.query.q) : "";
 
-  const result = await creditReadService.listCredits({
-    locationId: request.user.locationId,
-    status: "OPEN",
-    q,
-    limit,
-    cursor,
-  });
+  try {
+    const rows = await creditService.listOpenCredits({
+      locationId: request.user.locationId,
+      q,
+    });
 
-  return reply.send({
-    ok: true,
-    rows: result.rows,
-    nextCursor: result.nextCursor,
-  });
+    return reply.send({ ok: true, credits: rows });
+  } catch (e) {
+    request.log.error({ err: e }, "listOpenCredits failed");
+    return reply.status(500).send({ error: "Internal Server Error" });
+  }
 }
 
-module.exports = { getCredit, listCredits, listOpenCredits };
+module.exports = { listCredits, getCredit, listOpenCredits };

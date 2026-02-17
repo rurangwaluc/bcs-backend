@@ -20,7 +20,7 @@ const credits = pgTable(
 
     amount: integer("amount").notNull(),
 
-    status: varchar("status", { length: 20 }).notNull().default("OPEN"), // OPEN, SETTLED
+    status: varchar("status", { length: 20 }).notNull().default("PENDING"),
 
     createdBy: integer("created_by").notNull(), // seller
     approvedBy: integer("approved_by"), // manager/admin

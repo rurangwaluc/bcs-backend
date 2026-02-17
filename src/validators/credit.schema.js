@@ -1,26 +1,47 @@
-// backend/src/validators/credit.schema.js
-
+// backend/src/validators/credits.schema.js
 const { z } = require("zod");
 
+/**
+ * POST /credits
+ * Body: { saleId, note? }
+ */
 const createCreditSchema = z.object({
   saleId: z.number().int().positive(),
-  customerId: z.number().int().positive(),
-  note: z.string().max(500).optional(),
+  note: z.string().trim().max(500).optional(),
 });
 
-const approveCreditSchema = z.object({
+/**
+ * PATCH /credits/:id/decision
+ * Body: { decision: "APPROVE" | "REJECT", note? }
+ */
+const creditDecisionSchema = z.object({
   decision: z.enum(["APPROVE", "REJECT"]),
-  note: z.string().max(500).optional(),
+  note: z.string().trim().max(500).optional(),
 });
 
-// ✅ creditId removed (it comes from URL param :id)
-const settleCreditSchema = z.object({
-  method: z.string().min(1).max(30).optional(), // "CASH", "MOMO", "CARD" etc
-  note: z.string().max(500).optional(),
+/**
+ * PATCH /credits/:id/settle
+ * Body: { method, note?, cashSessionId? }
+ */
+const creditSettleSchema = z.object({
+  method: z
+    .string()
+    .trim()
+    .transform((v) => v.toUpperCase())
+    .refine((v) => ["CASH", "MOMO", "CARD", "BANK", "OTHER"].includes(v), {
+      message: "Invalid method",
+    })
+    .optional()
+    .default("CASH"),
+  note: z.string().trim().max(500).optional(),
+  cashSessionId: z.number().int().positive().optional(),
 });
 
 module.exports = {
   createCreditSchema,
-  approveCreditSchema,
-  settleCreditSchema,
+  approveCreditSchema: creditDecisionSchema,
+  settleCreditSchema: creditSettleSchema,
+  // keep originals too if you want:
+  creditDecisionSchema,
+  creditSettleSchema,
 };

@@ -2,8 +2,8 @@
 
 const {
   createCreditSchema,
-  approveCreditSchema,
-  settleCreditSchema,
+  approveCreditSchema, // this must validate { decision, note? }
+  settleCreditSchema, // this must validate { method, note?, cashSessionId? }
 } = require("../validators/credit.schema");
 
 const creditService = require("../services/creditService");
@@ -14,12 +14,18 @@ function toInt(v, def = null) {
   return Number.isFinite(n) ? n : def;
 }
 
+/**
+ * POST /credits
+ * Seller creates credit request from a sale.
+ * Body: { saleId, note? }
+ */
 async function createCredit(request, reply) {
-  const parsed = createCreditSchema.safeParse(request.body);
+  const parsed = createCreditSchema.safeParse(request.body || {});
   if (!parsed.success) {
-    return reply
-      .status(400)
-      .send({ error: "Invalid payload", details: parsed.error.flatten() });
+    return reply.status(400).send({
+      error: "Invalid payload",
+      details: parsed.error.flatten(),
+    });
   }
 
   try {
@@ -27,32 +33,53 @@ async function createCredit(request, reply) {
       locationId: request.user.locationId,
       sellerId: request.user.id,
       saleId: parsed.data.saleId,
-      customerId: parsed.data.customerId,
       note: parsed.data.note,
     });
+
     return reply.send({ ok: true, credit });
   } catch (e) {
+    request.log.error({ err: e }, "createCredit failed");
+
     if (e.code === "SALE_NOT_FOUND")
       return reply.status(404).send({ error: "Sale not found" });
-    if (e.code === "BAD_STATUS")
-      return reply.status(409).send({ error: "Sale must be PENDING" });
-    if (e.code === "DUPLICATE_CREDIT")
-      return reply.status(409).send({ error: "Credit already exists" });
 
-    request.log.error(e);
-    return reply.status(500).send({ error: "Internal Server Error" });
+    if (e.code === "BAD_STATUS")
+      return reply.status(409).send({
+        error: e.message || "Sale cannot create credit from current status",
+        debug: e.debug,
+      });
+
+    if (e.code === "MISSING_CUSTOMER")
+      return reply.status(409).send({ error: e.message });
+
+    if (e.code === "DUPLICATE_CREDIT")
+      return reply.status(409).send({ error: e.message });
+
+    if (e.code === "DUPLICATE_PAYMENT")
+      return reply.status(409).send({ error: e.message });
+
+    return reply.status(500).send({
+      error: "Internal Server Error",
+      debug: { code: e?.code },
+    });
   }
 }
 
+/**
+ * PATCH /credits/:id/decision
+ * Manager/Admin approves or rejects.
+ * Body: { decision: "APPROVE"|"REJECT", note? }
+ */
 async function approveCredit(request, reply) {
   const creditId = toInt(request.params.id, null);
   if (!creditId) return reply.status(400).send({ error: "Invalid credit id" });
 
-  const parsed = approveCreditSchema.safeParse(request.body);
+  const parsed = approveCreditSchema.safeParse(request.body || {});
   if (!parsed.success) {
-    return reply
-      .status(400)
-      .send({ error: "Invalid payload", details: parsed.error.flatten() });
+    return reply.status(400).send({
+      error: "Invalid payload",
+      details: parsed.error.flatten(),
+    });
   }
 
   try {
@@ -63,28 +90,39 @@ async function approveCredit(request, reply) {
       decision: parsed.data.decision,
       note: parsed.data.note,
     });
-    return reply.send({ ok: true, result: out });
+
+    return reply.send({ ok: true, ...out });
   } catch (e) {
+    request.log.error({ err: e }, "approveCredit failed");
+
     if (e.code === "NOT_FOUND")
       return reply.status(404).send({ error: "Credit not found" });
-    if (e.code === "BAD_STATUS")
-      return reply.status(409).send({ error: "Credit already processed" });
 
-    request.log.error(e);
-    return reply.status(500).send({ error: "Internal Server Error" });
+    if (e.code === "BAD_STATUS")
+      return reply.status(409).send({ error: e.message, debug: e.debug });
+
+    return reply.status(500).send({
+      error: "Internal Server Error",
+      debug: { code: e?.code },
+    });
   }
 }
 
+/**
+ * PATCH /credits/:id/settle
+ * Cashier/Admin settles an APPROVED credit.
+ * Body: { method, note?, cashSessionId? }
+ */
 async function settleCredit(request, reply) {
-  // ✅ IMPORTANT: settle uses URL param id (not body)
   const creditId = toInt(request.params.id, null);
   if (!creditId) return reply.status(400).send({ error: "Invalid credit id" });
 
-  const parsed = settleCreditSchema.safeParse(request.body);
+  const parsed = settleCreditSchema.safeParse(request.body || {});
   if (!parsed.success) {
-    return reply
-      .status(400)
-      .send({ error: "Invalid payload", details: parsed.error.flatten() });
+    return reply.status(400).send({
+      error: "Invalid payload",
+      details: parsed.error.flatten(),
+    });
   }
 
   try {
@@ -94,20 +132,26 @@ async function settleCredit(request, reply) {
       creditId,
       method: parsed.data.method,
       note: parsed.data.note,
+      cashSessionId: parsed.data.cashSessionId,
     });
-    return reply.send({ ok: true, result: out });
+
+    return reply.send({ ok: true, ...out });
   } catch (e) {
+    request.log.error({ err: e }, "settleCredit failed");
+
     if (e.code === "NOT_FOUND")
       return reply.status(404).send({ error: "Credit not found" });
-    if (e.code === "BAD_STATUS")
-      return reply.status(409).send({ error: "Credit not open" });
-    if (e.code === "NOT_APPROVED")
-      return reply.status(409).send({ error: "Credit must be approved first" });
-    if (e.code === "DUPLICATE_PAYMENT")
-      return reply.status(409).send({ error: "Payment already recorded" });
 
-    request.log.error(e);
-    return reply.status(500).send({ error: "Internal Server Error" });
+    if (e.code === "NOT_APPROVED")
+      return reply.status(409).send({ error: e.message, debug: e.debug });
+
+    if (e.code === "DUPLICATE_PAYMENT")
+      return reply.status(409).send({ error: e.message });
+
+    return reply.status(500).send({
+      error: "Internal Server Error",
+      debug: { code: e?.code },
+    });
   }
 }
 

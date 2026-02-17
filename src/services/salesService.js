@@ -656,7 +656,7 @@ async function markSale({
           saleId,
           customerId: sale.customerId,
           amount: sale.totalAmount,
-          status: "OPEN",
+          status: "PENDING",
           createdBy: actorId,
           note: sale.note ?? null,
           createdAt: new Date(),
