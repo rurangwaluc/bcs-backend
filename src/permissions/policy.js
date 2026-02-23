@@ -181,6 +181,7 @@ const policy = {
     ACTIONS.UPLOAD_VIEW,
 
     ACTIONS.MANAGER_DASHBOARD_VIEW,
+    ACTIONS.CUSTOMER_VIEW,
   ],
 
   // Store keeper: stock + requests + arrivals

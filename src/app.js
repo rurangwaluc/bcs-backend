@@ -16,7 +16,7 @@ const { ownerRoutes } = require("./routes/owner.routes");
 
 const { usersRoutes } = require("./routes/users.routes");
 const { customersRoutes } = require("./routes/customers.routes");
-const { messagesRoutes } = require("./routes/messages.routes");
+const { notesRoutes } = require("./routes/notes.routes");
 const { auditRoutes } = require("./routes/audit.routes");
 
 const { inventoryRoutes } = require("./routes/inventory.routes");
@@ -100,7 +100,7 @@ function buildApp() {
   // Users / messaging / audit
   app.register(usersRoutes);
   app.register(customersRoutes);
-  app.register(messagesRoutes);
+  app.register(notesRoutes);
   app.register(auditRoutes);
 
   // Inventory

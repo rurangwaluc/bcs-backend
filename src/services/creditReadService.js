@@ -1,19 +1,7 @@
 // backend/src/services/creditReadService.js
-// Credit read-only queries with cursor pagination.
-
 const { db } = require("../config/db");
 const { sql } = require("drizzle-orm");
 
-/**
- * Cursor pagination rule:
- * - Sort by c.id DESC
- * - If cursor is provided, return rows with c.id < cursor
- *
- * Filters:
- * - status: PENDING / APPROVED / REJECTED / SETTLED (or empty for all)
- * - q: searches customer name/phone
- * - limit: max 200
- */
 async function listCredits({
   locationId,
   status,
@@ -24,7 +12,6 @@ async function listCredits({
   const lim = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const pattern = q ? `%${String(q).trim()}%` : null;
   const cur = cursor ? Number(cursor) : null;
-
   const st = status ? String(status).trim().toUpperCase() : "";
 
   const res = await db.execute(sql`
@@ -40,8 +27,6 @@ async function listCredits({
       c.created_by as "createdBy",
       c.approved_by as "approvedBy",
       c.approved_at as "approvedAt",
-      c.rejected_by as "rejectedBy",
-      c.rejected_at as "rejectedAt",
       c.settled_by as "settledBy",
       c.settled_at as "settledAt",
       c.note,
@@ -58,7 +43,6 @@ async function listCredits({
 
   const rows = res.rows || res;
   const nextCursor = rows.length === lim ? rows[rows.length - 1].id : null;
-
   return { rows, nextCursor };
 }
 
@@ -77,8 +61,6 @@ async function getCreditById({ locationId, creditId }) {
       c.created_by as "createdBy",
       c.approved_by as "approvedBy",
       c.approved_at as "approvedAt",
-      c.rejected_by as "rejectedBy",
-      c.rejected_at as "rejectedAt",
       c.settled_by as "settledBy",
       c.settled_at as "settledAt",
       c.note,
