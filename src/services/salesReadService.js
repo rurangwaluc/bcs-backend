@@ -61,7 +61,7 @@ async function listSales({ locationId, filters }) {
       s.status,
       s.total_amount as "totalAmount",
       s.created_at as "createdAt",
-      s.updated_at as "updatedAt",   -- ✅ ADD THIS
+      s.updated_at as "updatedAt",  
       s.seller_id as "sellerId",
       s.customer_id as "customerId",
       s.payment_method as "paymentMethod",
