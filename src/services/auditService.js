@@ -1,6 +1,4 @@
 // backend/src/services/auditService.js
-// Real-world audit logging + list APIs (filters + pagination + location scoping)
-
 const { db } = require("../config/db");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
 const { users } = require("../db/schema/users.schema");
@@ -14,12 +12,11 @@ function isOwner(user) {
 function mapAuditRow(r) {
   return {
     id: r.id,
-    locationId: r.locationId ?? r.location_id ?? null,
     userId: r.userId ?? r.user_id ?? null,
-    userEmail: r.userEmail ?? r.user_email ?? null,
+    userEmail: r.userEmail ?? null,
     action: r.action,
     entity: r.entity,
-    entityId: r.entityId ?? r.entity_id ?? null,
+    entityId: r.entityId ?? null,
     description: r.description ?? null,
     meta: r.meta ?? null,
     createdAt: r.createdAt ?? r.created_at ?? null,
@@ -28,10 +25,8 @@ function mapAuditRow(r) {
 
 /**
  * Insert one audit log row.
- * This function is allowed to throw (use safeLogAudit for non-blocking).
  */
 async function logAudit({
-  locationId = null,
   userId = null,
   action,
   entity,
@@ -47,7 +42,6 @@ async function logAudit({
         : JSON.stringify(meta);
 
   await db.insert(auditLogs).values({
-    locationId,
     userId,
     action,
     entity,
@@ -58,32 +52,31 @@ async function logAudit({
 }
 
 /**
- * ✅ Non-blocking audit:
- * never throws, so it cannot break login / updates / payments etc.
+ * Non-blocking audit logging
  */
 async function safeLogAudit(payload) {
   try {
     await logAudit(payload);
   } catch (err) {
-    // do not crash main flow
-    // eslint-disable-next-line no-console
     console.error("AUDIT_LOG_FAILED:", err?.message || err);
   }
 }
 
 /**
- * GET /audit listing:
- * - Owner: can see all locations
- * - Non-owner: only rows where audit_logs.location_id == adminUser.locationId
+ * GET /audit listing
+ *
+ * Rules:
+ * - Owner → sees all logs
+ * - Non-owner → sees only own logs (by user_id)
  *
  * Cursor pagination:
- * - sort id DESC
- * - if cursor, return id < cursor
+ * - id DESC
+ * - cursor → id < cursor
  */
 async function listAuditLogs({ adminUser, filters }) {
   const limit = Math.max(1, Math.min(200, Number(filters?.limit || 50)));
-
   const cursorId = filters?.cursor ? Number(filters.cursor) : null;
+
   const action = filters?.action ? String(filters.action) : null;
   const entity = filters?.entity ? String(filters.entity) : null;
 
@@ -98,16 +91,15 @@ async function listAuditLogs({ adminUser, filters }) {
       : Number(filters.userId);
 
   const from = filters?.from instanceof Date ? filters.from : null;
-  const to = filters?.to instanceof Date ? filters.to : null;
-
+  const toExclusive =
+    filters?.toExclusive instanceof Date ? filters.toExclusive : null;
   const q = filters?.q ? String(filters.q).trim() : null;
 
   const conds = [];
 
-  // ✅ Location scoping (use audit_logs.locationId; not user join)
+  // 🔐 Scope non-owners to their own audit logs
   if (!isOwner(adminUser)) {
-    // hide global/unknown logs from non-owner
-    conds.push(eq(auditLogs.locationId, adminUser.locationId));
+    conds.push(eq(auditLogs.userId, adminUser.id));
   }
 
   if (cursorId) conds.push(lt(auditLogs.id, cursorId));
@@ -119,8 +111,7 @@ async function listAuditLogs({ adminUser, filters }) {
     conds.push(eq(auditLogs.userId, userId));
 
   if (from) conds.push(gte(auditLogs.createdAt, from));
-  if (to) conds.push(lte(auditLogs.createdAt, to));
-
+  if (toExclusive) conds.push(lt(auditLogs.createdAt, toExclusive));
   if (q) conds.push(ilike(auditLogs.description, `%${q}%`));
 
   const where = conds.length ? and(...conds) : undefined;
@@ -128,7 +119,6 @@ async function listAuditLogs({ adminUser, filters }) {
   const rows = await db
     .select({
       id: auditLogs.id,
-      locationId: auditLogs.locationId,
       userId: auditLogs.userId,
       userEmail: users.email,
       action: auditLogs.action,
