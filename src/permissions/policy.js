@@ -52,6 +52,7 @@ const policy = {
     ACTIONS.PRODUCT_UPDATE,
     ACTIONS.PRODUCT_PRICE_SET,
     ACTIONS.PRODUCT_PRICING_UPDATE,
+    ACTIONS.PRODUCT_DELETE,
 
     // Inventory
     ACTIONS.INVENTORY_VIEW,
@@ -195,6 +196,7 @@ const policy = {
     // Products
     ACTIONS.PRODUCT_CREATE,
     ACTIONS.PRODUCT_VIEW,
+    ACTIONS.PRODUCT_DELETE,
 
     // Inventory + arrivals
     ACTIONS.INVENTORY_VIEW,

@@ -1,5 +1,4 @@
 // backend/src/routes/inventory.routes.js
-
 const ACTIONS = require("../permissions/actions");
 const { requirePermission } = require("../middleware/requirePermission");
 
@@ -9,6 +8,9 @@ const {
   listInventory,
   adjustInventory,
   updateProductPricing,
+  archiveProduct,
+  restoreProduct,
+  deleteProduct,
 } = require("../controllers/inventoryController");
 
 async function inventoryRoutes(app) {
@@ -30,6 +32,26 @@ async function inventoryRoutes(app) {
     "/products/:id/pricing",
     { preHandler: [requirePermission(ACTIONS.PRODUCT_PRICING_UPDATE)] },
     updateProductPricing,
+  );
+
+  // ✅ archive/restore/delete (you can control permissions here)
+  app.patch(
+    "/products/:id/archive",
+    { preHandler: [requirePermission(ACTIONS.PRODUCT_UPDATE)] },
+    archiveProduct,
+  );
+
+  app.patch(
+    "/products/:id/restore",
+    { preHandler: [requirePermission(ACTIONS.PRODUCT_UPDATE)] },
+    restoreProduct,
+  );
+
+  // Hard delete is dangerous: lock it to admin/owner only
+  app.delete(
+    "/products/:id",
+    { preHandler: [requirePermission(ACTIONS.PRODUCT_DELETE)] },
+    deleteProduct,
   );
 
   // inventory
