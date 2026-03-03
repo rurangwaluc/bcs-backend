@@ -1,4 +1,5 @@
 // backend/src/services/paymentService.js
+
 const { db } = require("../config/db");
 const { payments } = require("../db/schema/payments.schema");
 const { sales } = require("../db/schema/sales.schema");
@@ -14,7 +15,7 @@ async function recordPayment({
   amount,
   method,
   note,
-  cashSessionId,
+  cashSessionId, // optional
 }) {
   const cleanMethod = String(method || "CASH").toUpperCase();
 
@@ -32,7 +33,7 @@ async function recordPayment({
     }
 
     // 2) Status check
-    if (!["AWAITING_PAYMENT_RECORD", "PENDING"].includes(sale.status)) {
+    if (!["AWAITING_PAYMENT_RECORD", "PENDING"].includes(String(sale.status))) {
       const err = new Error("Invalid sale status");
       err.code = "BAD_STATUS";
       throw err;
@@ -45,49 +46,77 @@ async function recordPayment({
       throw err;
     }
 
-    // 4) Validate OPEN cash session
-    const sessionCheck = await tx.execute(sql`
-      SELECT id FROM cash_sessions
-      WHERE id = ${cashSessionId}
-        AND cashier_id = ${cashierId}
-        AND location_id = ${locationId}
-        AND status = 'OPEN'
-      LIMIT 1
-    `);
+    // 4) Resolve cash session ONLY for CASH
+    let resolvedSessionId = cashSessionId ? Number(cashSessionId) : null;
 
-    const rows = sessionCheck?.rows || sessionCheck || [];
-    if (rows.length === 0) {
-      const err = new Error("No open cash session");
-      err.code = "NO_OPEN_SESSION";
-      throw err;
+    if (cleanMethod === "CASH") {
+      if (!resolvedSessionId) {
+        const auto = await tx.execute(sql`
+          SELECT id
+          FROM cash_sessions
+          WHERE cashier_id = ${cashierId}
+            AND location_id = ${locationId}
+            AND status = 'OPEN'
+          ORDER BY opened_at DESC
+          LIMIT 1
+        `);
+        const autoRows = auto?.rows || auto || [];
+        if (autoRows.length === 0) {
+          const err = new Error("No open cash session");
+          err.code = "NO_OPEN_SESSION";
+          throw err;
+        }
+        resolvedSessionId = Number(autoRows[0].id);
+      } else {
+        // Validate provided session is OPEN and belongs to cashier+location
+        const sessionCheck = await tx.execute(sql`
+          SELECT id
+          FROM cash_sessions
+          WHERE id = ${resolvedSessionId}
+            AND cashier_id = ${cashierId}
+            AND location_id = ${locationId}
+            AND status = 'OPEN'
+          LIMIT 1
+        `);
+        const rows = sessionCheck?.rows || sessionCheck || [];
+        if (rows.length === 0) {
+          const err = new Error("No open cash session");
+          err.code = "NO_OPEN_SESSION";
+          throw err;
+        }
+      }
+    } else {
+      // Non-cash methods: do NOT require a cash session
+      resolvedSessionId = resolvedSessionId || null;
     }
 
-    // 5) Prevent double payment
-    const existing = await tx.execute(sql`
-      SELECT id FROM payments WHERE sale_id = ${saleId} LIMIT 1
-    `);
-    const existingRows = existing?.rows || existing || [];
-    if (existingRows.length > 0) {
-      const err = new Error("Duplicate payment");
-      err.code = "DUPLICATE_PAYMENT";
-      throw err;
+    // 5) Insert payment (race-safe with DB unique constraint + catch)
+    try {
+      await tx.insert(payments).values({
+        locationId,
+        saleId,
+        cashierId,
+        cashSessionId: resolvedSessionId,
+        amount,
+        method: cleanMethod,
+        note: note || null,
+      });
+    } catch (e) {
+      // Postgres unique violation
+      if (e && e.code === "23505") {
+        const err = new Error("Duplicate payment");
+        err.code = "DUPLICATE_PAYMENT";
+        throw err;
+      }
+      throw e;
     }
 
-    // 6) Insert payment (✅ LINKED TO SESSION)
-    await tx.insert(payments).values({
-      locationId,
-      saleId,
-      cashierId,
-      cashSessionId, // ✅ THIS IS THE KEY FIX
-      amount,
-      method: cleanMethod,
-      note: note || null,
-    });
-
-    // 7) Cash ledger
+    // 6) Cash ledger entry
+    // Keep ledger for all methods, but cashSessionId will be null for non-cash
     await tx.insert(cashLedger).values({
       locationId,
       cashierId,
+      cashSessionId: resolvedSessionId,
       type: "SALE_PAYMENT",
       direction: "IN",
       amount,
@@ -96,16 +125,16 @@ async function recordPayment({
       note: "Sale payment recorded",
     });
 
-    // 8) Complete sale
+    // 7) Complete sale
     const [updatedSale] = await tx
       .update(sales)
       .set({ status: "COMPLETED", updatedAt: new Date() })
       .where(eq(sales.id, saleId))
       .returning();
 
-    // 9️⃣ Audit log (✅ include locationId)
+    // 8) Audit log
     await tx.insert(auditLogs).values({
-      locationId, // ✅ FIX
+      locationId,
       userId: cashierId,
       action: "PAYMENT_RECORD",
       entity: "sale",

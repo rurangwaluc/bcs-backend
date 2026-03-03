@@ -6,6 +6,7 @@ const {
   varchar,
   timestamp,
   text,
+  bigint,
 } = require("drizzle-orm/pg-core");
 
 const sales = pgTable("sales", {
@@ -19,17 +20,19 @@ const sales = pgTable("sales", {
   customerPhone: varchar("customer_phone", { length: 40 }),
 
   status: varchar("status", { length: 40 }).notNull().default("DRAFT"),
-  totalAmount: integer("total_amount").notNull().default(0),
 
-  // ✅ NEW: seller-selected method for this sale (optional)
+  // ✅ FIX: bigint (matches DB)
+  totalAmount: bigint("total_amount", { mode: "number" }).notNull().default(0),
+
+  // seller-selected method (optional)
   paymentMethod: varchar("payment_method", { length: 30 }),
 
   note: text("note"),
 
-  createdAt: timestamp("created_at").defaultNow(),
-  updatedAt: timestamp("updated_at").defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 
-  canceledAt: timestamp("canceled_at"),
+  canceledAt: timestamp("canceled_at", { withTimezone: true }),
   canceledBy: integer("canceled_by"),
   cancelReason: text("cancel_reason"),
 });

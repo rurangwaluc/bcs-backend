@@ -13,7 +13,7 @@ async function cashReconcileRoutes(app) {
     listCashReconciles,
   );
 
-  app.post(
+  app.post( 
     "/reconcile",
     { preHandler: [requirePermission(ACTIONS.CASH_RECONCILE_CREATE)] },
     createCashReconcile,
@@ -21,3 +21,4 @@ async function cashReconcileRoutes(app) {
 }
 
 module.exports = { cashReconcileRoutes };
+ 

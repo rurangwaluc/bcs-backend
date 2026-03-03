@@ -1,5 +1,8 @@
+// backend/src/routes/users.routes.js
+
 const ACTIONS = require("../permissions/actions");
 const { requirePermission } = require("../middleware/requirePermission");
+
 const {
   createUser,
   listUsers,
@@ -8,31 +11,32 @@ const {
 } = require("../controllers/usersController");
 
 async function usersRoutes(app) {
-  // Admin can manage users
+  // Create user (Admin/Owner)
   app.post(
     "/users",
-    { preHandler: [requirePermission(ACTIONS.USER_MANAGE)] },
-    createUser,
+    { preHandler: [requirePermission(ACTIONS.USER_CREATE)] },
+    createUser
   );
 
+  // View users
   app.get(
     "/users",
     { preHandler: [requirePermission(ACTIONS.USER_VIEW)] },
-    listUsers,
+    listUsers
   );
 
-  // Update (PATCH)
+  // Update user (PATCH)
   app.patch(
     "/users/:id",
-    { preHandler: [requirePermission(ACTIONS.USER_MANAGE)] },
-    updateUser,
+    { preHandler: [requirePermission(ACTIONS.USER_UPDATE)] },
+    updateUser
   );
 
-  // "Delete" = deactivate (real world)
+  // Deactivate user (real world "delete")
   app.delete(
     "/users/:id",
-    { preHandler: [requirePermission(ACTIONS.USER_MANAGE)] },
-    deleteUser,
+    { preHandler: [requirePermission(ACTIONS.USER_DELETE)] },
+    deleteUser
   );
 }
 

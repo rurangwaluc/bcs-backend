@@ -1,6 +1,7 @@
 // backend/src/services/inventoryAdjustRequestsService.js
 
 const { db } = require("../config/db");
+const notificationService = require("./notificationService");
 
 const {
   inventoryAdjustmentRequests,
@@ -46,6 +47,19 @@ async function createRequest({
       entity: "inventory_adjustment_request",
       entityId: row.id,
       description: `Requested inventory adjustment: productId=${productId}, qtyChange=${qtyChange}. reason=${reason || "-"}`,
+    });
+
+    // 🔔 Inventory adjustment request -> manager (warn)
+    await notificationService.notifyRoles({
+      locationId,
+      roles: ["manager", "admin"],
+      actorUserId: requestedByUserId,
+      type: "INVENTORY_ADJUST_REQUEST_CREATED",
+      title: "Inventory adjustment request",
+      body: `Product #${productId}, change: ${qtyChange}. Reason: ${reason || "-"}. Request #${row.id}.`,
+      priority: "warn",
+      entity: "inventory_adjustment_request",
+      entityId: Number(row.id),
     });
 
     return row;

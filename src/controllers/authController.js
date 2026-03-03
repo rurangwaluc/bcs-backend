@@ -1,10 +1,15 @@
 const crypto = require("crypto");
+
 const { db } = require("../config/db");
 const { env } = require("../config/env");
+
 const { users } = require("../db/schema/users.schema");
 const { sessions } = require("../db/schema/sessions.schema");
+const { locations } = require("../db/schema/locations.schema");
+
 const { verifyPassword } = require("../utils/password");
 const { eq } = require("drizzle-orm");
+
 const { safeLogAudit } = require("../services/auditService");
 const AUDIT = require("../audit/actions");
 
@@ -29,10 +34,88 @@ function readSignedSid(request) {
   return raw;
 }
 
-async function login(request, reply) {
-  const { email, password } = request.body;
+function sidCookieOptions(expiresAt) {
+  const isProd = env.NODE_ENV === "production";
+  const secure = Boolean(env.COOKIE_SECURE);
+  const sameSite = isProd ? "none" : "lax";
 
-  const rows = await db.select().from(users).where(eq(users.email, email));
+  const opts = {
+    httpOnly: true,
+    secure,
+    sameSite,
+    path: "/",
+    signed: true,
+    expires: expiresAt,
+  };
+
+  if (env.COOKIE_DOMAIN) opts.domain = env.COOKIE_DOMAIN;
+  return opts;
+}
+
+// ✅ helper: always return user with location object + lastSeenAt
+async function buildUserWithLocation(userId) {
+  const rows = await db
+    .select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      role: users.role,
+      isActive: users.isActive,
+      lastSeenAt: users.lastSeenAt,
+      location: {
+        id: locations.id,
+        name: locations.name,
+        code: locations.code,
+      },
+    })
+    .from(users)
+    .leftJoin(locations, eq(locations.id, users.locationId))
+    .where(eq(users.id, userId));
+
+  const u = rows[0];
+  if (!u) return null;
+
+  const loc = u.location?.id ? u.location : { id: null, name: null, code: null };
+
+  return {
+    id: String(u.id),
+    name: u.name,
+    email: u.email,
+    role: u.role,
+    isActive: u.isActive,
+    lastSeenAt: u.lastSeenAt ? new Date(u.lastSeenAt).toISOString() : null,
+    location: {
+      id: loc.id != null ? String(loc.id) : null,
+      name: loc.name,
+      code: loc.code,
+    },
+  };
+}
+
+// ✅ small helper: update lastSeenAt, never break auth
+async function touchLastSeen(userId, request) {
+  try {
+    if (!userId) return;
+    await db
+      .update(users)
+      .set({ lastSeenAt: new Date() })
+      .where(eq(users.id, userId));
+  } catch (e) {
+    request?.log?.warn?.(e);
+  }
+}
+
+async function login(request, reply) {
+  const { email, password } = request.body || {};
+
+  const em = String(email || "").trim().toLowerCase();
+  const pw = String(password || "");
+
+  if (!em || !pw) {
+    return reply.status(400).send({ error: "Email and password are required" });
+  }
+
+  const rows = await db.select().from(users).where(eq(users.email, em));
   const user = rows[0];
 
   if (!user || user.isActive === false) {
@@ -42,12 +125,12 @@ async function login(request, reply) {
       action: AUDIT.LOGIN_FAILED,
       entity: "auth",
       entityId: null,
-      description: `Failed login for ${email}`,
+      description: `Failed login for ${em}`,
     });
     return reply.status(401).send({ error: "Invalid credentials" });
   }
 
-  const ok = verifyPassword(password, user.passwordHash);
+  const ok = verifyPassword(pw, user.passwordHash);
   if (!ok) {
     await safeLogAudit({
       locationId: user.locationId,
@@ -55,17 +138,14 @@ async function login(request, reply) {
       action: AUDIT.LOGIN_FAILED,
       entity: "auth",
       entityId: user.id,
-      description: `Failed login for ${email}`,
+      description: `Failed login for ${em}`,
     });
     return reply.status(401).send({ error: "Invalid credentials" });
   }
 
-  // ✅ Store only a hash in the DB (protects you if sessions table ever leaks).
-  // NOTE: this will invalidate existing sessions on deployment (users must re-login).
   const sessionTokenRaw = makeToken();
   const sessionTokenHash = sha256Hex(sessionTokenRaw);
-
-  const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7); // 7 days
+  const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7);
 
   await db.insert(sessions).values({
     userId: user.id,
@@ -82,34 +162,36 @@ async function login(request, reply) {
     description: `User logged in (${user.email})`,
   });
 
-  reply.setCookie("sid", sessionTokenRaw, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "none",
-    path: "/",
-    signed: true,
-    expires: expiresAt,
-  });
+  reply.setCookie("sid", sessionTokenRaw, sidCookieOptions(expiresAt));
+
+  // ✅ mark active now
+  await touchLastSeen(user.id, request);
+
+  const userOut = await buildUserWithLocation(user.id);
 
   return reply.send({
     ok: true,
-    user: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      locationId: user.locationId,
-    },
+    user: userOut,
   });
 }
 
 async function me(request, reply) {
-  if (!request.user) return reply.status(401).send({ error: "Unauthorized" });
-  return reply.send({ user: request.user });
+  if (!request.user?.id) {
+    return reply.status(401).send({ error: "Unauthorized" });
+  }
+
+  // ✅ update lastSeenAt on every /auth/me
+  await touchLastSeen(Number(request.user.id), request);
+
+  const userOut = await buildUserWithLocation(Number(request.user.id));
+  if (!userOut) return reply.status(401).send({ error: "Unauthorized" });
+
+  return reply.send({ ok: true, user: userOut });
 }
 
 async function logout(request, reply) {
   const raw = readSignedSid(request);
+
   if (raw) {
     const hash = sha256Hex(raw);
     await db.delete(sessions).where(eq(sessions.sessionToken, hash));
@@ -124,7 +206,11 @@ async function logout(request, reply) {
     description: `User logged out`,
   });
 
-  reply.clearCookie("sid", { path: "/" });
+  reply.clearCookie("sid", {
+    path: "/",
+    ...(env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {}),
+  });
+
   return reply.send({ ok: true });
 }
 

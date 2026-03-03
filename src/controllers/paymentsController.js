@@ -21,13 +21,12 @@ async function recordPayment(request, reply) {
       method: String(parsed.data.method || "CASH").toUpperCase(),
       note: parsed.data.note,
 
-      // ✅ PASS SESSION ID
+      // ✅ optional now (service resolves open session automatically)
       cashSessionId: parsed.data.cashSessionId,
     });
 
     return reply.send({ ok: true, sale });
   } catch (e) {
-    // known errors
     if (e.code === "NOT_FOUND")
       return reply.status(404).send({ error: "Sale not found" });
 

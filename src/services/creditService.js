@@ -1,6 +1,7 @@
 // backend/src/services/creditService.js
 
 const { db } = require("../config/db");
+const notificationService = require("./notificationService");
 const { credits } = require("../db/schema/credits.schema");
 const { sales } = require("../db/schema/sales.schema");
 const { payments } = require("../db/schema/payments.schema");
@@ -161,6 +162,19 @@ async function createCredit({ locationId, sellerId, saleId, note }) {
       },
     });
 
+    // 🔔 Credit request created -> manager/admin (warn)
+    await notificationService.notifyRoles({
+      locationId,
+      roles: ["manager", "admin"],
+      actorUserId: sellerId,
+      type: "CREDIT_REQUEST_CREATED",
+      title: `Credit request created for Sale #${sid}`,
+      body: `Amount: ${sale.totalAmount}. Customer ID: ${sale.customerId}. Credit ID: ${created.id}.`,
+      priority: "warn",
+      entity: "credit",
+      entityId: Number(created.id),
+    });
+
     return created;
   });
 }
@@ -280,16 +294,23 @@ async function decideCredit({
       meta: { note: cleanNote },
     });
 
+    // 🔔 Notify seller who created the credit
+    await notificationService.createNotification({
+      locationId,
+      recipientUserId: Number(credit.createdBy),
+      actorUserId: managerId,
+      type: "CREDIT_REJECTED",
+      title: `Credit rejected (Sale #${credit.saleId})`,
+      body: cleanNote ? `Reason: ${cleanNote}` : "No reason provided.",
+      priority: "normal",
+      entity: "credit",
+      entityId: Number(id),
+    });
+
     return { ok: true, decision: "APPROVE" };
   });
 }
 
-/**
- * Settle credit.
- *
- * ✅ Allowed only when status=APPROVED
- * ✅ Creates payment, writes cash ledger, completes sale, then sets credit=SETTLED
- */
 async function settleCredit({
   locationId,
   cashierId,
@@ -303,6 +324,19 @@ async function settleCredit({
     const err = new Error("Invalid credit id");
     err.code = "BAD_CREDIT_ID";
     throw err;
+  }
+
+  function normMethod(v) {
+    const m = v == null ? "" : String(v);
+    const out = m.trim().toUpperCase();
+    return out || "CASH";
+  }
+
+  function toNote(v, max = 500) {
+    if (v == null) return null;
+    const s = String(v).trim();
+    if (!s) return null;
+    return s.slice(0, max);
   }
 
   return db.transaction(async (tx) => {
@@ -325,7 +359,7 @@ async function settleCredit({
       throw err;
     }
 
-    // prevent duplicate payment for sale
+    // Prevent duplicate payment for sale (also keep UNIQUE index in DB)
     const existingPay = await tx.execute(sql`
       SELECT id FROM payments
       WHERE sale_id = ${credit.saleId} AND location_id = ${locationId}
@@ -340,8 +374,49 @@ async function settleCredit({
 
     const now = new Date();
     const payMethod = normMethod(method);
-    const csid = toNullableInt(cashSessionId);
     const cleanNote = toNote(note);
+
+    // ✅ Resolve OPEN cash session when method is CASH (same behavior as recordPayment)
+    let resolvedSessionId = cashSessionId ? Number(cashSessionId) : null;
+
+    if (payMethod === "CASH") {
+      if (!resolvedSessionId) {
+        const auto = await tx.execute(sql`
+          SELECT id
+          FROM cash_sessions
+          WHERE cashier_id = ${cashierId}
+            AND location_id = ${locationId}
+            AND status = 'OPEN'
+          ORDER BY opened_at DESC
+          LIMIT 1
+        `);
+        const autoRows = auto?.rows || auto || [];
+        if (autoRows.length === 0) {
+          const err = new Error("No open cash session");
+          err.code = "NO_OPEN_SESSION";
+          throw err;
+        }
+        resolvedSessionId = Number(autoRows[0].id);
+      } else {
+        const sessionCheck = await tx.execute(sql`
+          SELECT id
+          FROM cash_sessions
+          WHERE id = ${resolvedSessionId}
+            AND cashier_id = ${cashierId}
+            AND location_id = ${locationId}
+            AND status = 'OPEN'
+          LIMIT 1
+        `);
+        const rows = sessionCheck?.rows || sessionCheck || [];
+        if (rows.length === 0) {
+          const err = new Error("No open cash session");
+          err.code = "NO_OPEN_SESSION";
+          throw err;
+        }
+      }
+    } else {
+      resolvedSessionId = resolvedSessionId || null; // non-cash allowed to be null
+    }
 
     const [payment] = await tx
       .insert(payments)
@@ -349,7 +424,7 @@ async function settleCredit({
         locationId,
         saleId: credit.saleId,
         cashierId,
-        cashSessionId: csid,
+        cashSessionId: resolvedSessionId,
         amount: credit.amount,
         method: payMethod,
         note: cleanNote || "Credit settlement",
@@ -359,10 +434,7 @@ async function settleCredit({
 
     await tx
       .update(sales)
-      .set({
-        status: "COMPLETED",
-        updatedAt: now,
-      })
+      .set({ status: "COMPLETED", updatedAt: now })
       .where(
         and(eq(sales.id, credit.saleId), eq(sales.locationId, locationId)),
       );
@@ -370,7 +442,7 @@ async function settleCredit({
     await tx.insert(cashLedger).values({
       locationId,
       cashierId,
-      cashSessionId: csid,
+      cashSessionId: resolvedSessionId,
       type: "CREDIT_SETTLEMENT",
       direction: "IN",
       amount: credit.amount,
@@ -391,7 +463,6 @@ async function settleCredit({
       })
       .where(and(eq(credits.id, id), eq(credits.locationId, locationId)));
 
-    // ✅ FIX: include locationId
     await logAudit({
       locationId,
       userId: cashierId,
@@ -399,7 +470,36 @@ async function settleCredit({
       entity: "credit",
       entityId: id,
       description: "Credit settled",
-      meta: { method: payMethod, amount: credit.amount, cashSessionId: csid },
+      meta: {
+        method: payMethod,
+        amount: credit.amount,
+        cashSessionId: resolvedSessionId,
+      },
+    });
+
+    // 🔔 Notify seller who created the credit (and manager/admin as info)
+    await notificationService.createNotification({
+      locationId,
+      recipientUserId: Number(credit.createdBy),
+      actorUserId: cashierId,
+      type: "CREDIT_SETTLED",
+      title: `Credit settled (Sale #${credit.saleId})`,
+      body: `Amount: ${credit.amount}. Method: ${payMethod}. Payment #${payment.id}.`,
+      priority: "normal",
+      entity: "credit",
+      entityId: Number(id),
+    });
+
+    await notificationService.notifyRoles({
+      locationId,
+      roles: ["manager", "admin"],
+      actorUserId: cashierId,
+      type: "CREDIT_SETTLED_INFO",
+      title: `Credit settled for Sale #${credit.saleId}`,
+      body: `Amount: ${credit.amount}. Method: ${payMethod}.`,
+      priority: "normal",
+      entity: "credit",
+      entityId: Number(id),
     });
 
     return { ok: true, paymentId: payment.id };

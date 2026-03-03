@@ -1,8 +1,8 @@
-// backend/src/db/schema/credits.schema.js
 const {
   pgTable,
   serial,
   integer,
+  bigint,
   varchar,
   timestamp,
   text,
@@ -13,30 +13,26 @@ const credits = pgTable(
   "credits",
   {
     id: serial("id").primaryKey(),
-
     locationId: integer("location_id").notNull(),
     saleId: integer("sale_id").notNull(),
     customerId: integer("customer_id").notNull(),
-
-    amount: integer("amount").notNull(),
-
+    amount: bigint("amount", { mode: "number" }).notNull(),
     status: varchar("status", { length: 20 }).notNull().default("PENDING"),
-
-    createdBy: integer("created_by").notNull(), // seller
-    approvedBy: integer("approved_by"), // manager/admin
-    approvedAt: timestamp("approved_at"),
-
+    createdBy: integer("created_by").notNull(),
+    approvedBy: integer("approved_by"),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    rejectedBy: integer("rejected_by"),
+    rejectedAt: timestamp("rejected_at", { withTimezone: true }),
     settledBy: integer("settled_by"),
-    settledAt: timestamp("settled_at"),
-
+    settledAt: timestamp("settled_at", { withTimezone: true }),
     note: text("note"),
-    createdAt: timestamp("created_at").defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (t) => ({
-    // ✅ prevent duplicate credit per sale in same location
-    uniqCreditPerSale: uniqueIndex("credits_sale_location_unique").on(
+    // globally unique index
+    locationCustomerUniq: uniqueIndex("credits_location_customer_uniq").on(
       t.locationId,
-      t.saleId,
+      t.customerId,
     ),
   }),
 );

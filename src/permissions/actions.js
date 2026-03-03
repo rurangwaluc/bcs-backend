@@ -47,6 +47,12 @@ const ACTIONS = {
   LOCATION_UPDATE: "LOCATION_UPDATE",
 
   // =====================
+  // Notifications
+  // =====================
+
+  NOTIFICATION_VIEW: "NOTIFICATION_VIEW",
+  NOTIFICATION_MARK_READ: "NOTIFICATION_MARK_READ",
+  // =====================
   // Products
   // =====================
   PRODUCT_CREATE: "PRODUCT_CREATE",
@@ -152,6 +158,8 @@ const ACTIONS = {
 
   // Legacy
   CASH_LEDGER_MANAGE: "CASH_LEDGER_MANAGE",
+
+  CASH_LEDGER_VIEW: "CASH_LEDGER_VIEW",
 
   // =====================
   // Credits

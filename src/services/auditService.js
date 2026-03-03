@@ -1,4 +1,5 @@
 // backend/src/services/auditService.js
+
 const { db } = require("../config/db");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
 const { users } = require("../db/schema/users.schema");
@@ -12,6 +13,7 @@ function isOwner(user) {
 function mapAuditRow(r) {
   return {
     id: r.id,
+    locationId: r.locationId ?? r.location_id ?? null, // ✅ include for UI "Place"
     userId: r.userId ?? r.user_id ?? null,
     userEmail: r.userEmail ?? r.user_email ?? null,
     action: r.action,
@@ -23,91 +25,117 @@ function mapAuditRow(r) {
   };
 }
 
+function toIntOrNull(v) {
+  if (v === undefined || v === null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function toDateOrNull(v) {
+  if (!v) return null;
+  if (v instanceof Date && !Number.isNaN(v.getTime())) return v;
+
+  // allow "YYYY-MM-DD" or ISO strings
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return null;
+  return d;
+}
+
 /**
  * Insert one audit log row.
- * ✅ Your DB DOES NOT have audit_logs.location_id (confirmed by error).
- * So we must NOT insert locationId here.
+ * DB requires: location_id (NOT NULL), user_id (NOT NULL), entity_id (NOT NULL), description (NOT NULL)
  */
 async function logAudit({
-  userId = null,
+  locationId,
+  userId,
   action,
   entity,
-  entityId = null,
+  entityId,
   description = "",
   meta = null,
 }) {
-  const metaStr =
-    meta == null
-      ? null
-      : typeof meta === "string"
-        ? meta
-        : JSON.stringify(meta);
+  const loc = toIntOrNull(locationId);
+  const uid = toIntOrNull(userId);
+  const eid = toIntOrNull(entityId);
+
+  if (loc == null) {
+    const err = new Error("AUDIT: locationId is required");
+    err.code = "AUDIT_LOCATION_REQUIRED";
+    throw err;
+  }
+  if (uid == null) {
+    const err = new Error("AUDIT: userId is required");
+    err.code = "AUDIT_USER_REQUIRED";
+    throw err;
+  }
+  if (!action || !entity || eid == null) {
+    const err = new Error("AUDIT: action/entity/entityId are required");
+    err.code = "AUDIT_FIELDS_REQUIRED";
+    throw err;
+  }
+
+  // meta is jsonb in schema: keep objects as objects.
+  // If caller passes a string, keep it as string.
+  const metaValue = meta === undefined ? null : meta;
 
   await db.insert(auditLogs).values({
-    userId,
-    action,
-    entity,
-    entityId,
-    description,
-    meta: metaStr ?? null,
+    locationId: loc,
+    userId: uid,
+    action: String(action),
+    entity: String(entity),
+    entityId: eid,
+    description: String(description || ""), // description is NOT NULL in your schema
+    meta: metaValue,
   });
 }
 
 /**
- * ✅ Non-blocking audit logging (recommended for inventory/sales/payments)
+ * Non-blocking audit logging (recommended for inventory/sales/payments)
  */
 async function safeLogAudit(payload) {
   try {
-    // defensively drop locationId if callers pass it
-    const { locationId, ...rest } = payload || {};
-    await logAudit(rest);
+    await logAudit(payload || {});
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.error("AUDIT_LOG_FAILED:", err?.message || err);
+    console.error("AUDIT_LOG_FAILED:", err?.code || err?.message || err);
   }
 }
 
 /**
  * GET /audit listing
- * IMPORTANT: without location_id column, we cannot scope by location reliably.
- * ✅ Owner: can see all
- * ✅ Non-owner: filter by userId only (minimum safe option)
+ *
+ * ✅ Owner: can see all locations (whole company/system)
+ * ✅ Non-owner (admin/manager/...): sees logs for their location only (store/branch wide)
  */
 async function listAuditLogs({ adminUser, filters }) {
   const limit = Math.max(1, Math.min(200, Number(filters?.limit || 50)));
 
-  const cursorId = filters?.cursor ? Number(filters.cursor) : null;
+  const cursorId = toIntOrNull(filters?.cursor);
+
   const action = filters?.action ? String(filters.action) : null;
   const entity = filters?.entity ? String(filters.entity) : null;
 
-  const entityId =
-    filters?.entityId === undefined || filters?.entityId === null
-      ? null
-      : Number(filters.entityId);
+  const entityId = toIntOrNull(filters?.entityId);
+  const userId = toIntOrNull(filters?.userId);
 
-  const userId =
-    filters?.userId === undefined || filters?.userId === null
-      ? null
-      : Number(filters.userId);
+  const from = toDateOrNull(filters?.from);
+  const to = toDateOrNull(filters?.to);
 
-  const from = filters?.from instanceof Date ? filters.from : null;
-  const to = filters?.to instanceof Date ? filters.to : null;
   const q = filters?.q ? String(filters.q).trim() : null;
 
   const conds = [];
 
-  // ✅ Only option available with current schema
+  // ✅ Scope rules
   if (!isOwner(adminUser)) {
-    conds.push(eq(auditLogs.userId, adminUser.id));
+    // Store/branch-wide audit
+    conds.push(eq(auditLogs.locationId, Number(adminUser.locationId)));
   }
 
-  if (cursorId) conds.push(lt(auditLogs.id, cursorId));
+  if (cursorId != null) conds.push(lt(auditLogs.id, cursorId));
   if (action) conds.push(eq(auditLogs.action, action));
   if (entity) conds.push(eq(auditLogs.entity, entity));
-  if (entityId !== null && Number.isFinite(entityId))
-    conds.push(eq(auditLogs.entityId, entityId));
-  if (userId !== null && Number.isFinite(userId))
-    conds.push(eq(auditLogs.userId, userId));
+  if (entityId != null) conds.push(eq(auditLogs.entityId, entityId));
+  if (userId != null) conds.push(eq(auditLogs.userId, userId));
   if (from) conds.push(gte(auditLogs.createdAt, from));
   if (to) conds.push(lte(auditLogs.createdAt, to));
   if (q) conds.push(ilike(auditLogs.description, `%${q}%`));
@@ -117,6 +145,7 @@ async function listAuditLogs({ adminUser, filters }) {
   const rows = await db
     .select({
       id: auditLogs.id,
+      locationId: auditLogs.locationId,
       userId: auditLogs.userId,
       userEmail: users.email,
       action: auditLogs.action,
@@ -133,8 +162,7 @@ async function listAuditLogs({ adminUser, filters }) {
     .limit(limit);
 
   const mapped = rows.map(mapAuditRow);
-  const nextCursor =
-    mapped.length === limit ? mapped[mapped.length - 1].id : null;
+  const nextCursor = mapped.length === limit ? mapped[mapped.length - 1].id : null;
 
   return { rows: mapped, nextCursor };
 }

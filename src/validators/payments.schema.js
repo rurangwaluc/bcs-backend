@@ -2,16 +2,15 @@
 const { z } = require("zod");
 
 const recordPaymentSchema = z.object({
-  saleId: z.number().int().positive(),
-  amount: z.number().int().positive(),
+  saleId: z.coerce.number().int().positive(),
+  amount: z.coerce.number().int().positive(),
 
-  // ✅ match frontend
+  // match frontend
   method: z.enum(["CASH", "MOMO", "CARD", "BANK", "OTHER"]).optional(),
-
   note: z.string().trim().max(200).optional(),
 
-  // ✅ REQUIRED by backend service
-  cashSessionId: z.number().int().positive(),
+  // ✅ OPTIONAL: backend will auto-resolve open session if missing
+  cashSessionId: z.coerce.number().int().positive().optional(),
 });
 
 module.exports = { recordPaymentSchema };

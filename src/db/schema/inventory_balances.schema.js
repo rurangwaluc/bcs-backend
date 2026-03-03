@@ -2,30 +2,26 @@ const {
   pgTable,
   serial,
   integer,
+  bigint,
   timestamp,
   uniqueIndex,
 } = require("drizzle-orm/pg-core");
 
-/**
- * ✅ Canonical inventory balances table
- *
- * Your Postgres table is named: inventory_balances
- * Columns are snake_case in DB.
- */
 const inventoryBalances = pgTable(
   "inventory_balances",
   {
     id: serial("id").primaryKey(),
     locationId: integer("location_id").notNull(),
-    productId: integer("product_id").notNull(),
+    productId: bigint("product_id", { mode: "number" }).notNull(),
     qtyOnHand: integer("qty_on_hand").notNull().default(0),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => ({
-    locationProductUniq: uniqueIndex("inv_balances_location_product_uniq").on(
-      t.locationId,
-      t.productId,
-    ),
+    locationProductUniq: uniqueIndex(
+      "inventory_balances_location_product_uniq",
+    ).on(t.locationId, t.productId),
   }),
 );
 

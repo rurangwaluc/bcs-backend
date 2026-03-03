@@ -1,4 +1,5 @@
 // backend/src/app.js
+
 const fastify = require("fastify");
 const rateLimit = require("@fastify/rate-limit");
 const cors = require("@fastify/cors");
@@ -8,7 +9,11 @@ const multipart = require("@fastify/multipart");
 const { env } = require("./config/env");
 const { sessionAuth } = require("./middleware/sessionAuth");
 
+// ✅ ADD THIS
+const { touchLastSeen } = require("./middleware/touchLastSeen");
+
 // Routes
+const { bootstrapRoutes } = require("./routes/bootstrap.routes");
 const { authRoutes } = require("./routes/auth.routes");
 const { dashboardRoutes } = require("./routes/dashboard.routes");
 const { ownerDashboardRoutes } = require("./routes/dashboard.owner.routes");
@@ -26,6 +31,8 @@ const {
 const {
   inventoryAdjustRequestsRoutes,
 } = require("./routes/inventoryAdjustRequests.routes");
+
+const { notificationsRoutes } = require("./routes/notifications.routes");
 
 const { managerDashboardRoutes } = require("./routes/manager.dashboard.routes");
 const { adminDashboardRoutes } = require("./routes/adminDashboardRoutes");
@@ -56,40 +63,43 @@ const { uploadsRoutes } = require("./routes/uploads.routes");
 function buildApp() {
   const app = fastify({ logger: true });
 
-  // ✅ IMPORTANT: allow both browser and server-to-server (Next.js proxy) calls
+  const allowList = new Set(env.CORS_ORIGINS);
+
   app.register(cors, {
-    origin: true,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Bootstrap-Secret"],
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      if (allowList.has(origin)) return cb(null, true);
+      cb(new Error(`CORS blocked for origin: ${origin}`), false);
+    },
   });
 
-  // Sign cookies using SESSION_SECRET
   app.register(cookie, {
     secret: env.SESSION_SECRET,
     hook: "onRequest",
   });
 
-  // Multipart (uploads)
   app.register(multipart, {
-    limits: {
-      fileSize: 10 * 1024 * 1024,
-      files: 5,
-    },
+    limits: { fileSize: 10 * 1024 * 1024, files: 5 },
   });
 
   app.register(rateLimit, { global: false });
 
-  // ✅ Global auth
+  // ✅ auth first (sets request.user)
   app.addHook("preHandler", sessionAuth);
 
-  // Health
+  // ✅ then lastSeen tracker (needs request.user)
+  app.addHook("preHandler", touchLastSeen);
+
   app.get("/health", async () => ({
     status: "ok",
     timestamp: new Date().toISOString(),
   }));
 
-  // Auth / dashboards
+  app.register(bootstrapRoutes);
+
   app.register(authRoutes);
   app.register(dashboardRoutes);
   app.register(ownerDashboardRoutes);
@@ -97,13 +107,13 @@ function buildApp() {
   app.register(managerDashboardRoutes);
   app.register(adminDashboardRoutes);
 
-  // Users / messaging / audit
+  app.register(notificationsRoutes);
+
   app.register(usersRoutes);
   app.register(customersRoutes);
   app.register(notesRoutes);
   app.register(auditRoutes);
 
-  // Inventory
   app.register(inventoryRoutes);
   app.register(inventoryArrivalRoutes);
   app.register(inventoryAdjustRequestsRoutes);
@@ -111,31 +121,25 @@ function buildApp() {
   app.register(holdingsRoutes);
   app.register(requestsRoutes);
 
-  // Sales / payments
   app.register(salesRoutes);
   app.register(salesReadRoutes);
   app.register(refundsRoutes);
   app.register(paymentsRoutes);
   app.register(paymentsReadRoutes);
 
-  // Cash
   app.register(cashRoutes);
   app.register(cashSessionsRoutes, { prefix: "/cash-sessions" });
   app.register(cashbookRoutes, { prefix: "/cashbook" });
   app.register(expensesRoutes, { prefix: "/cash/expenses" });
   app.register(cashReconcileRoutes, { prefix: "/" });
 
-  // Credit
   app.register(creditRoutes);
   app.register(creditReadRoutes);
 
-  // Reports
   app.register(reportsRoutes);
 
-  // Uploads
   app.register(uploadsRoutes);
 
-  // Global error handler
   app.setErrorHandler((error, request, reply) => {
     request.log.error(error);
 

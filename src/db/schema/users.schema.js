@@ -4,7 +4,7 @@ const {
   varchar,
   timestamp,
   boolean,
-  integer
+  integer,
 } = require("drizzle-orm/pg-core");
 
 const users = pgTable("users", {
@@ -18,7 +18,10 @@ const users = pgTable("users", {
   role: varchar("role", { length: 50 }).notNull(),
   isActive: boolean("is_active").default(true),
 
-  createdAt: timestamp("created_at").defaultNow()
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+
+  // ✅ NEW
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
 });
 
 module.exports = { users };

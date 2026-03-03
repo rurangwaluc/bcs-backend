@@ -46,6 +46,10 @@ const policy = {
     ACTIONS.LOCATION_VIEW,
     ACTIONS.LOCATION_UPDATE,
 
+    // Notifications
+    ACTIONS.NOTIFICATION_VIEW,
+    ACTIONS.NOTIFICATION_MARK_READ,
+
     // Products
     ACTIONS.PRODUCT_CREATE,
     ACTIONS.PRODUCT_VIEW,
@@ -125,6 +129,7 @@ const policy = {
 
     // Legacy support (kept)
     ACTIONS.CASH_LEDGER_MANAGE,
+    ACTIONS.CASH_LEDGER_VIEW,
 
     ACTIONS.ADMIN_DASHBOARD_VIEW,
   ],
@@ -139,6 +144,10 @@ const policy = {
     ACTIONS.AUDIT_VIEW,
     ACTIONS.MESSAGE_CREATE,
     ACTIONS.MESSAGE_VIEW,
+
+    // Notifications
+    ACTIONS.NOTIFICATION_VIEW,
+    ACTIONS.NOTIFICATION_MARK_READ,
 
     // Products (pricing control)
     ACTIONS.PRODUCT_VIEW,
@@ -175,6 +184,8 @@ const policy = {
     ACTIONS.CASH_RECONCILE_VIEW,
     ACTIONS.CASH_RECONCILE_CREATE,
 
+    ACTIONS.CASH_LEDGER_VIEW,
+
     // Users view only
     ACTIONS.USER_VIEW,
 
@@ -197,6 +208,10 @@ const policy = {
     ACTIONS.PRODUCT_CREATE,
     ACTIONS.PRODUCT_VIEW,
     ACTIONS.PRODUCT_DELETE,
+
+    // Notifications
+    ACTIONS.NOTIFICATION_VIEW,
+    ACTIONS.NOTIFICATION_MARK_READ,
 
     // Inventory + arrivals
     ACTIONS.INVENTORY_VIEW,
@@ -250,6 +265,10 @@ const policy = {
     ACTIONS.SALE_VIEW,
     ACTIONS.SALE_MARK,
 
+    // Notifications
+    ACTIONS.NOTIFICATION_VIEW,
+    ACTIONS.NOTIFICATION_MARK_READ,
+
     // ✅ Credits: Seller can request credit + track status
     ACTIONS.CREDIT_CREATE,
     ACTIONS.CREDIT_VIEW,
@@ -288,6 +307,10 @@ const policy = {
 
     ACTIONS.REFUND_VIEW,
 
+    // Notifications
+    ACTIONS.NOTIFICATION_VIEW,
+    ACTIONS.NOTIFICATION_MARK_READ,
+
     // Uploads (view only)
     ACTIONS.UPLOAD_VIEW,
 
@@ -296,6 +319,8 @@ const policy = {
     ACTIONS.CREDIT_SETTLE,
 
     ACTIONS.REFUND_CREATE,
+
+    ACTIONS.CASH_LEDGER_VIEW,
   ],
 };
 

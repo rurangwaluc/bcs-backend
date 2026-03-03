@@ -1,60 +1,56 @@
+// backend/src/controllers/reportsController.js
 const PDFDocument = require("pdfkit");
 const reportsService = require("../services/reportsService");
 
+/**
+ * ✅ FIX: Use LOCAL day boundaries for "from/to" inputs.
+ * Date inputs mean local days. Using UTC can hide data.
+ */
 function parseDateOnly(s) {
   const v = String(s || "").trim();
   if (!v) return null;
-  // accepts YYYY-MM-DD
   if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
-  const d = new Date(`${v}T00:00:00.000Z`);
+
+  const [yy, mm, dd] = v.split("-").map(Number);
+  const d = new Date(yy, mm - 1, dd, 0, 0, 0, 0); // local midnight
   if (Number.isNaN(d.getTime())) return null;
   return d;
 }
 
 function getRangeFromQuery(query) {
-  // default: today (server local-ish, but fine for now)
   const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth();
-  const d = now.getDate();
 
-  const defaultFrom = new Date(Date.UTC(y, m, d, 0, 0, 0));
-  const defaultTo = new Date(Date.UTC(y, m, d + 1, 0, 0, 0));
+  const defaultFrom = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    0,
+    0,
+    0,
+    0
+  );
+
+  // "to" is inclusive in UI, but we convert to exclusive end (to + 1 day)
+  const defaultTo = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    0,
+    0,
+    0,
+    0
+  );
 
   const fromDate = parseDateOnly(query?.from);
   const toDate = parseDateOnly(query?.to);
 
-  const from = fromDate
-    ? new Date(
-        Date.UTC(
-          fromDate.getUTCFullYear(),
-          fromDate.getUTCMonth(),
-          fromDate.getUTCDate(),
-          0,
-          0,
-          0,
-        ),
-      )
-    : defaultFrom;
+  const start = fromDate ? new Date(fromDate) : defaultFrom;
 
-  // "to" is inclusive date in UI terms, but for SQL we use exclusive end:
-  // if to=2026-01-30 => end=2026-01-31 00:00
-  const toBase = toDate
-    ? new Date(
-        Date.UTC(
-          toDate.getUTCFullYear(),
-          toDate.getUTCMonth(),
-          toDate.getUTCDate(),
-          0,
-          0,
-          0,
-        ),
-      )
-    : new Date(defaultTo);
+  const toBase = toDate ? new Date(toDate) : defaultTo;
   const end = new Date(toBase);
-  end.setUTCDate(end.getUTCDate() + 1);
+  end.setDate(end.getDate() + 1); // exclusive end
 
-  return { start: from, end };
+  return { start, end };
 }
 
 // --------------------------------------------------
@@ -85,7 +81,7 @@ async function dailyReport(request, reply) {
   reply.header("Content-Type", "application/pdf");
   reply.header(
     "Content-Disposition",
-    `attachment; filename="daily-report-${date}.pdf"`,
+    `attachment; filename="daily-report-${date}.pdf"`
   );
 
   doc.pipe(reply.raw);
@@ -110,7 +106,7 @@ async function dailyReport(request, reply) {
     doc
       .fontSize(10)
       .text(
-        `#${r.id} ${r.name} (${r.sku || "-"}) qty=${r.qtyOnHand} cost=${r.costPrice || 0} sell=${r.sellingPrice || 0}`,
+        `#${r.id} ${r.name} (${r.sku || "-"}) qty=${r.qtyOnHand} cost=${r.costPrice || 0} sell=${r.sellingPrice || 0}`
       );
   });
 
@@ -123,7 +119,7 @@ async function dailyReport(request, reply) {
     doc
       .fontSize(10)
       .text(
-        `seller=${r.sellerId} product=${r.productId} ${r.productName} qty=${r.qtyOnHand}`,
+        `seller=${r.sellerId} product=${r.productId} ${r.productName} qty=${r.qtyOnHand}`
       );
   });
 
@@ -132,8 +128,7 @@ async function dailyReport(request, reply) {
 
 async function weeklyReport(request, reply) {
   const locationId = request.user.locationId;
-  const startStr =
-    request.query?.start || new Date().toISOString().slice(0, 10);
+  const startStr = request.query?.start || new Date().toISOString().slice(0, 10);
 
   const range = reportsService.weekRange(startStr);
   if (!range)
@@ -149,7 +144,7 @@ async function weeklyReport(request, reply) {
   reply.header("Content-Type", "application/pdf");
   reply.header(
     "Content-Disposition",
-    `attachment; filename="weekly-report-${startStr}.pdf"`,
+    `attachment; filename="weekly-report-${startStr}.pdf"`
   );
 
   doc.pipe(reply.raw);
@@ -188,7 +183,7 @@ async function monthlyReport(request, reply) {
   reply.header("Content-Type", "application/pdf");
   reply.header(
     "Content-Disposition",
-    `attachment; filename="monthly-report-${month}.pdf"`,
+    `attachment; filename="monthly-report-${month}.pdf"`
   );
 
   doc.pipe(reply.raw);
@@ -218,11 +213,7 @@ async function cashSummaryReport(request, reply) {
     const locationId = request.user.locationId;
     const { start, end } = getRangeFromQuery(request.query);
 
-    const summary = await reportsService.cashSummary({
-      locationId,
-      start,
-      end,
-    });
+    const summary = await reportsService.cashSummary({ locationId, start, end });
     return reply.send({ ok: true, range: { start, end }, summary });
   } catch (e) {
     request.log.error(e);
@@ -235,11 +226,7 @@ async function cashSessionsReport(request, reply) {
     const locationId = request.user.locationId;
     const { start, end } = getRangeFromQuery(request.query);
 
-    const out = await reportsService.cashSessionsReport({
-      locationId,
-      start,
-      end,
-    });
+    const out = await reportsService.cashSessionsReport({ locationId, start, end });
     return reply.send({ ok: true, range: { start, end }, ...out });
   } catch (e) {
     request.log.error(e);
@@ -251,17 +238,9 @@ async function cashLedgerReport(request, reply) {
   try {
     const locationId = request.user.locationId;
     const { start, end } = getRangeFromQuery(request.query);
-    const limit = Math.min(
-      500,
-      Math.max(1, Number(request.query?.limit || 200)),
-    );
+    const limit = Math.min(500, Math.max(1, Number(request.query?.limit || 200)));
 
-    const rows = await reportsService.cashLedgerReport({
-      locationId,
-      start,
-      end,
-      limit,
-    });
+    const rows = await reportsService.cashLedgerReport({ locationId, start, end, limit });
     return reply.send({ ok: true, range: { start, end }, rows });
   } catch (e) {
     request.log.error(e);
@@ -273,17 +252,9 @@ async function cashRefundsReport(request, reply) {
   try {
     const locationId = request.user.locationId;
     const { start, end } = getRangeFromQuery(request.query);
-    const limit = Math.min(
-      500,
-      Math.max(1, Number(request.query?.limit || 200)),
-    );
+    const limit = Math.min(500, Math.max(1, Number(request.query?.limit || 200)));
 
-    const rows = await reportsService.cashRefundsReport({
-      locationId,
-      start,
-      end,
-      limit,
-    });
+    const rows = await reportsService.cashRefundsReport({ locationId, start, end, limit });
     return reply.send({ ok: true, range: { start, end }, rows });
   } catch (e) {
     request.log.error(e);
@@ -296,7 +267,6 @@ module.exports = {
   weeklyReport,
   monthlyReport,
 
-  // ✅ cash
   cashSummaryReport,
   cashSessionsReport,
   cashLedgerReport,

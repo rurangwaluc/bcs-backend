@@ -1,5 +1,6 @@
 // backend/src/services/salesService.js
 const { db } = require("../config/db");
+const notificationService = require("./notificationService");
 const { sales } = require("../db/schema/sales.schema");
 const { saleItems } = require("../db/schema/sale_items.schema");
 const { products } = require("../db/schema/products.schema");
@@ -675,6 +676,22 @@ async function markSale({
           ? `Sale #${saleId} marked PAID -> ${nextStatus} (method=${methodSafe})`
           : `Sale #${saleId} marked CREDIT -> ${nextStatus}`,
     });
+
+    // 🔔 Notify cashier + manager when seller marks PAID (awaiting payment record)
+    if (nextStatus === "AWAITING_PAYMENT_RECORD") {
+      // Notify roles in the same location (active users only)
+      await notificationService.notifyRoles({
+        locationId,
+        roles: ["cashier", "manager"],
+        actorUserId: actorId,
+        type: "SALE_AWAITING_PAYMENT_RECORD",
+        title: `Sale #${saleId} needs payment record`,
+        body: `Seller marked this sale as PAID (${methodSafe}). Please record payment to complete.`,
+        priority: "high",
+        entity: "sale",
+        entityId: Number(saleId),
+      });
+    }
 
     return updated;
   });

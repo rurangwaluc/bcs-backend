@@ -1,5 +1,6 @@
 const { db } = require("../config/db");
 const { users } = require("../db/schema/users.schema");
+const { locations } = require("../db/schema/locations.schema"); // ✅ NEW
 const { hashPassword } = require("../utils/password");
 const { eq, and } = require("drizzle-orm");
 const ROLES = require("../permissions/roles");
@@ -8,6 +9,44 @@ const AUDIT = require("../audit/actions");
 
 function isOwner(adminUser) {
   return adminUser?.role === ROLES.OWNER;
+}
+
+function userSelectWithLocation() {
+  return {
+    id: users.id,
+    locationId: users.locationId,
+    name: users.name,
+    email: users.email,
+    role: users.role,
+    isActive: users.isActive,
+    createdAt: users.createdAt,
+    lastSeenAt: users.lastSeenAt,
+
+    // ✅ NEW: nested location object
+    location: {
+      id: locations.id,
+      name: locations.name,
+      code: locations.code,
+    },
+  };
+}
+
+function normalizeUserRow(row) {
+  // If join fails (no matching location), return location: null
+  const loc = row?.location;
+  const hasLoc = loc && loc.id != null;
+  return { ...row, location: hasLoc ? loc : null };
+}
+
+async function getUserByIdWithLocation({ adminUser, userId }) {
+  const rows = await db
+    .select(userSelectWithLocation())
+    .from(users)
+    .leftJoin(locations, eq(locations.id, users.locationId))
+    .where(and(eq(users.id, userId), eq(users.locationId, adminUser.locationId)))
+    .limit(1);
+
+  return rows[0] ? normalizeUserRow(rows[0]) : null;
 }
 
 async function locationHasOwner(locationId) {
@@ -35,12 +74,7 @@ async function createUser({ adminUser, data }) {
   const existing = await db
     .select()
     .from(users)
-    .where(
-      and(
-        eq(users.locationId, adminUser.locationId),
-        eq(users.email, data.email),
-      ),
-    );
+    .where(and(eq(users.locationId, adminUser.locationId), eq(users.email, data.email)));
 
   if (existing[0]) {
     const err = new Error("Email already exists");
@@ -57,8 +91,9 @@ async function createUser({ adminUser, data }) {
       passwordHash,
       role: data.role,
       isActive: data.isActive ?? true,
+      lastSeenAt: null,
     })
-    .returning();
+    .returning({ id: users.id });
 
   await safeLogAudit({
     locationId: adminUser.locationId,
@@ -66,26 +101,23 @@ async function createUser({ adminUser, data }) {
     action: AUDIT.USER_CREATE,
     entity: "user",
     entityId: created.id,
-    description: `Created user ${created.email} role=${created.role}`,
-    meta: { role: created.role, isActive: created.isActive },
+    description: `Created user ${data.email} role=${data.role}`,
+    meta: { role: data.role, isActive: data.isActive ?? true },
   });
 
-  return created;
+  // ✅ Return enriched user (with location)
+  const enriched = await getUserByIdWithLocation({ adminUser, userId: created.id });
+  return enriched;
 }
 
 async function listUsers({ adminUser }) {
-  return db
-    .select({
-      id: users.id,
-      locationId: users.locationId,
-      name: users.name,
-      email: users.email,
-      role: users.role,
-      isActive: users.isActive,
-      createdAt: users.createdAt,
-    })
+  const rows = await db
+    .select(userSelectWithLocation())
     .from(users)
+    .leftJoin(locations, eq(locations.id, users.locationId))
     .where(eq(users.locationId, adminUser.locationId));
+
+  return rows.map(normalizeUserRow);
 }
 
 async function updateUser({ adminUser, targetUserId, data }) {
@@ -101,22 +133,19 @@ async function updateUser({ adminUser, targetUserId, data }) {
     throw err;
   }
 
-  const rows = await db
-    .select()
+  const target = await db
+    .select({ id: users.id, name: users.name, role: users.role, isActive: users.isActive, email: users.email })
     .from(users)
-    .where(
-      and(
-        eq(users.id, targetUserId),
-        eq(users.locationId, adminUser.locationId),
-      ),
-    );
+    .where(and(eq(users.id, targetUserId), eq(users.locationId, adminUser.locationId)))
+    .limit(1);
 
-  const target = rows[0];
-  if (!target) {
+  if (!target[0]) {
     const err = new Error("User not found");
     err.code = "NOT_FOUND";
     throw err;
   }
+
+  const before = target[0];
 
   const updates = {};
   if (data.name !== undefined) updates.name = data.name;
@@ -126,16 +155,13 @@ async function updateUser({ adminUser, targetUserId, data }) {
   const [updated] = await db
     .update(users)
     .set(updates)
-    .where(eq(users.id, targetUserId))
-    .returning();
+    .where(and(eq(users.id, targetUserId), eq(users.locationId, adminUser.locationId)))
+    .returning({ id: users.id });
 
   const changes = {};
-  if (data.name !== undefined)
-    changes.name = { from: target.name, to: updated.name };
-  if (data.role !== undefined)
-    changes.role = { from: target.role, to: updated.role };
-  if (data.isActive !== undefined)
-    changes.isActive = { from: target.isActive, to: updated.isActive };
+  if (data.name !== undefined) changes.name = { from: before.name, to: data.name };
+  if (data.role !== undefined) changes.role = { from: before.role, to: data.role };
+  if (data.isActive !== undefined) changes.isActive = { from: before.isActive, to: data.isActive };
 
   await safeLogAudit({
     locationId: adminUser.locationId,
@@ -143,11 +169,13 @@ async function updateUser({ adminUser, targetUserId, data }) {
     action: AUDIT.USER_UPDATE,
     entity: "user",
     entityId: updated.id,
-    description: `Updated user ${updated.email}`,
+    description: `Updated user ${before.email}`,
     meta: changes,
   });
 
-  return updated;
+  // ✅ Return enriched user (with location)
+  const enriched = await getUserByIdWithLocation({ adminUser, userId: updated.id });
+  return enriched;
 }
 
 async function deactivateUser({ adminUser, targetUserId }) {
@@ -157,36 +185,36 @@ async function deactivateUser({ adminUser, targetUserId }) {
     throw err;
   }
 
-  const rows = await db
-    .select()
+  const target = await db
+    .select({ id: users.id, isActive: users.isActive, role: users.role, email: users.email })
     .from(users)
-    .where(
-      and(
-        eq(users.id, targetUserId),
-        eq(users.locationId, adminUser.locationId),
-      ),
-    );
+    .where(and(eq(users.id, targetUserId), eq(users.locationId, adminUser.locationId)))
+    .limit(1);
 
-  const target = rows[0];
-  if (!target) {
+  if (!target[0]) {
     const err = new Error("User not found");
     err.code = "NOT_FOUND";
     throw err;
   }
 
-  if (target.role === ROLES.OWNER && !isOwner(adminUser)) {
+  const before = target[0];
+
+  if (before.role === ROLES.OWNER && !isOwner(adminUser)) {
     const err = new Error("Only owner can deactivate owner users");
     err.code = "OWNER_ONLY";
     throw err;
   }
 
-  if (!target.isActive) return target;
+  if (!before.isActive) {
+    const enriched = await getUserByIdWithLocation({ adminUser, userId: before.id });
+    return enriched;
+  }
 
   const [updated] = await db
     .update(users)
     .set({ isActive: false })
-    .where(eq(users.id, targetUserId))
-    .returning();
+    .where(and(eq(users.id, targetUserId), eq(users.locationId, adminUser.locationId)))
+    .returning({ id: users.id });
 
   await safeLogAudit({
     locationId: adminUser.locationId,
@@ -194,11 +222,13 @@ async function deactivateUser({ adminUser, targetUserId }) {
     action: AUDIT.USER_DEACTIVATE,
     entity: "user",
     entityId: updated.id,
-    description: `Deactivated user ${updated.email}`,
+    description: `Deactivated user ${before.email}`,
     meta: { from: true, to: false },
   });
 
-  return updated;
+  // ✅ Return enriched user (with location)
+  const enriched = await getUserByIdWithLocation({ adminUser, userId: updated.id });
+  return enriched;
 }
 
 module.exports = { createUser, listUsers, updateUser, deactivateUser };
