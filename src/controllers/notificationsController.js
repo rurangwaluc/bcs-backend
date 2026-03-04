@@ -80,10 +80,23 @@ async function stream(request, reply) {
   const userId = request.user?.id;
   const locationId = request.user?.locationId;
 
+  const origin = request.headers.origin;
+
+  // IMPORTANT for credentialed SSE (cookies)
+  if (origin) {
+    reply.raw.setHeader("Access-Control-Allow-Origin", origin);
+    reply.raw.setHeader("Vary", "Origin");
+    reply.raw.setHeader("Access-Control-Allow-Credentials", "true");
+  }
+
   // SSE headers
   reply.raw.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   reply.raw.setHeader("Cache-Control", "no-cache, no-transform");
   reply.raw.setHeader("Connection", "keep-alive");
+
+  // Helps some proxies not buffer SSE
+  reply.raw.setHeader("X-Accel-Buffering", "no");
+
   reply.raw.flushHeaders?.();
 
   const send = (event, data) => {
@@ -95,7 +108,7 @@ async function stream(request, reply) {
     }
   };
 
-  // initial hello + current unread count (helps UI show badge instantly)
+  // initial hello + current unread count
   try {
     const unread = await require("../services/notificationService").unreadCount(
       {
@@ -108,14 +121,11 @@ async function stream(request, reply) {
     send("hello", { ok: true, unread: 0 });
   }
 
-  // keepalive ping every 25s (prevents proxies from closing connection)
   const pingTimer = setInterval(() => send("ping", { t: Date.now() }), 25000);
 
   const unsubscribe = require("../services/notificationService").subscribeUser(
     userId,
-    (payload) => {
-      send("notification", payload);
-    },
+    (payload) => send("notification", payload),
   );
 
   request.raw.on("close", () => {
@@ -123,7 +133,6 @@ async function stream(request, reply) {
     unsubscribe();
   });
 
-  // Keep open
   return reply;
 }
 

@@ -63,6 +63,16 @@ const { uploadsRoutes } = require("./routes/uploads.routes");
 function buildApp() {
   const app = fastify({ logger: true });
 
+  const { db } = require("./config/db");
+  const { sql } = require("drizzle-orm");
+
+  db.execute(sql`select current_database() as db, current_schema() as schema`)
+    .then((r) => {
+      const rows = r.rows || r;
+      console.log("[DB CHECK]", rows?.[0]);
+    })
+    .catch((e) => console.error("[DB CHECK FAILED]", e));
+
   const allowList = new Set(env.CORS_ORIGINS);
 
   app.register(cors, {

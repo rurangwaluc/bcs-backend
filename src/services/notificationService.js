@@ -5,17 +5,13 @@ const { db } = require("../config/db");
 const { notifications } = require("../db/schema/notifications.schema");
 const { users } = require("../db/schema/users.schema");
 const { locations } = require("../db/schema/locations.schema");
-
 const { and, eq, desc, lt, inArray, sql } = require("drizzle-orm");
 const { EventEmitter } = require("events");
 
 /**
- * Real-time delivery (SSE):
- * - one in-memory emitter per recipient userId
- * - when we insert notification rows, we also "emit" them
- * - stream endpoint subscribes, pushes events to client
+ * Real-time delivery (SSE): in-memory emitters per recipient userId
  */
-const userEmitters = new Map(); // userId -> EventEmitter
+const userEmitters = new Map();
 
 function getEmitter(userId) {
   const id = String(userId);
@@ -30,30 +26,39 @@ function getEmitter(userId) {
 
 function publishToUser(userId, payload) {
   if (userId == null) return;
-  const em = getEmitter(userId);
-  em.emit("notification", payload);
+  getEmitter(userId).emit("notification", payload);
 }
 
 /**
  * Helper: get active users in a location by roles.
- * roles must be lowercase strings matching your DB values (admin, manager, cashier, seller, store_keeper, owner)
+ * IMPORTANT: accepts optional tx (so it can run inside a parent transaction)
  */
-async function getUsersByRoles({ locationId, roles = [], onlyActive = true }) {
+async function getUsersByRoles({
+  locationId,
+  roles = [],
+  onlyActive = true,
+  tx = null,
+}) {
   const roleList = (roles || [])
     .map((r) => String(r || "").toLowerCase())
     .filter(Boolean);
+
   if (!roleList.length) return [];
+
+  const q = tx || db;
 
   const where = [eq(users.locationId, Number(locationId))];
   if (onlyActive) where.push(eq(users.isActive, true));
   where.push(inArray(users.role, roleList));
 
-  const rows = await db
+  const rows = await q
     .select({
       id: users.id,
       name: users.name,
       email: users.email,
       role: users.role,
+      locationId: users.locationId,
+      isActive: users.isActive,
     })
     .from(users)
     .where(and(...where));
@@ -62,8 +67,8 @@ async function getUsersByRoles({ locationId, roles = [], onlyActive = true }) {
 }
 
 /**
- * Insert ONE notification and return the inserted row plus location label.
- * location label = "name (CODE)" so UI can show real world store/branch.
+ * Insert ONE notification and return the inserted row + location label.
+ * IMPORTANT: accepts optional tx so it can use the same DB session as a parent transaction.
  */
 async function createNotification({
   locationId,
@@ -75,6 +80,7 @@ async function createNotification({
   priority = "normal",
   entity = null,
   entityId = null,
+  tx = null,
 }) {
   const locId = Number(locationId);
   const recId = Number(recipientUserId);
@@ -95,7 +101,9 @@ async function createNotification({
     throw err;
   }
 
-  const [row] = await db
+  const q = tx || db;
+
+  const [row] = await q
     .insert(notifications)
     .values({
       locationId: locId,
@@ -113,17 +121,23 @@ async function createNotification({
     })
     .returning();
 
+  // PROOF log (remove later)
+  console.log("[NOTIF] inserted", {
+    id: row?.id,
+    locId,
+    recId,
+    type,
+    priority,
+  });
+
   // enrich with location label for the stream consumers
-  const locRows = await db
+  const locRows = await q
     .select({ name: locations.name, code: locations.code })
     .from(locations)
     .where(eq(locations.id, locId))
     .limit(1);
 
   const loc = locRows?.[0] || null;
-  const locationLabel =
-    loc?.name && loc?.code ? `${loc.name} (${loc.code})` : loc?.name || "Store";
-
   const payload = {
     ...row,
     location: {
@@ -131,7 +145,10 @@ async function createNotification({
       name: loc?.name ?? null,
       code: loc?.code ?? null,
     },
-    locationLabel,
+    locationLabel:
+      loc?.name && loc?.code
+        ? `${loc.name} (${loc.code})`
+        : loc?.name || "Store",
   };
 
   publishToUser(recId, payload);
@@ -151,6 +168,7 @@ async function createNotifications({
   priority = "normal",
   entity = null,
   entityId = null,
+  tx = null,
 }) {
   const unique = Array.from(
     new Set(
@@ -163,9 +181,6 @@ async function createNotifications({
 
   const out = [];
   for (const uid of unique) {
-    // per-recipient insert (keeps returning row + pushes SSE)
-    // If you want bulk insert later, we can optimize.
-    // For now: correctness > micro-optimization.
     // eslint-disable-next-line no-await-in-loop
     const row = await createNotification({
       locationId,
@@ -177,6 +192,7 @@ async function createNotifications({
       priority,
       entity,
       entityId,
+      tx,
     });
     out.push(row);
   }
@@ -184,7 +200,7 @@ async function createNotifications({
 }
 
 /**
- * Convenience: notify all users in location that match roles.
+ * Notify all users in location that match roles.
  */
 async function notifyRoles({
   locationId,
@@ -196,14 +212,26 @@ async function notifyRoles({
   priority = "normal",
   entity = null,
   entityId = null,
+  tx = null,
 }) {
   const targets = await getUsersByRoles({
     locationId,
     roles,
     onlyActive: true,
+    tx,
   });
+
+  // PROOF log (remove later)
+  console.log("[NOTIF] notifyRoles targets", {
+    locationId: Number(locationId),
+    roles,
+    count: targets.length,
+    ids: targets.map((t) => Number(t.id)),
+  });
+
   const ids = targets.map((u) => u.id);
-  return createNotifications({
+
+  const rows = await createNotifications({
     locationId,
     recipientUserIds: ids,
     actorUserId,
@@ -213,13 +241,21 @@ async function notifyRoles({
     priority,
     entity,
     entityId,
+    tx,
   });
+
+  console.log("[NOTIF] notifyRoles inserted count", rows.length);
+
+  return rows;
 }
 
-/**
- * List notifications for current user (cursor pagination by id).
- * Returns: { rows, nextCursor }
- */
+// ---- rest of your file unchanged (listNotifications, unreadCount, markRead, markAllRead, subscribeUser) ----
+function subscribeUser(userId, handler) {
+  const em = getEmitter(userId);
+  em.on("notification", handler);
+  return () => em.off("notification", handler);
+}
+
 async function listNotifications({
   locationId,
   recipientUserId,
@@ -295,26 +331,14 @@ async function markAllRead({ locationId, recipientUserId }) {
   return { ok: true };
 }
 
-/**
- * SSE stream:
- * - Controller calls subscribe(userId, sendFn) and unsubscribe()
- */
-function subscribeUser(userId, handler) {
-  const em = getEmitter(userId);
-  em.on("notification", handler);
-  return () => em.off("notification", handler);
-}
-
 module.exports = {
   createNotification,
   createNotifications,
   notifyRoles,
-
   listNotifications,
   unreadCount,
   markRead,
   markAllRead,
-
   getUsersByRoles,
   subscribeUser,
 };

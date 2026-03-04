@@ -426,6 +426,27 @@ async function createSale({
       description: `Sale #${sale.id} created (DRAFT), total=${saleDisc.totalAmount}`,
     });
 
+    console.log("[NOTIF TEST] about to notify store_keeper for sale", {
+      locId,
+      sellId,
+      saleId: sale.id,
+    });
+
+    await notificationService.notifyRoles({
+      locationId: locId,
+      roles: ["store_keeper"],
+      actorUserId: sellId,
+      type: "SALE_DRAFT_CREATED",
+      title: "Stock release needed",
+      body: `A new sale needs stock release (Sale #${sale.id}).`,
+      priority: "high",
+      entity: "sale",
+      entityId: Number(sale.id),
+
+      // ✅ IMPORTANT: use same transaction connection
+      tx,
+    });
+
     return sale;
   });
 }
