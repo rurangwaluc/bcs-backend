@@ -18,11 +18,17 @@ const customers = pgTable(
     name: varchar("name", { length: 120 }).notNull(),
     phone: varchar("phone", { length: 30 }).notNull(),
 
+    tin: varchar("tin", { length: 30 }),
+    address: varchar("address", { length: 200 }),
+
     notes: text("notes"),
+
+    tin: varchar("tin", { length: 60 }),
+    address: text("address"),
     createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
   },
   (t) => ({
-    // ✅ prevent duplicates per shop/location
     uniqPhonePerLocation: uniqueIndex("customers_phone_location_unique").on(
       t.locationId,
       t.phone,

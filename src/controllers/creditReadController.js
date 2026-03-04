@@ -1,11 +1,11 @@
 // backend/src/controllers/creditReadController.js
+"use strict";
 
 const creditReadService = require("../services/creditReadService");
 const creditService = require("../services/creditService");
 
 /**
  * GET /credits?status=&q=&limit=&cursor=
- * Used by CreditsPanel (pagination + filters)
  */
 async function listCredits(request, reply) {
   const { status, q, limit, cursor } = request.query || {};
@@ -28,7 +28,7 @@ async function listCredits(request, reply) {
 
 /**
  * GET /credits/:id
- * Used by CreditsPanel detail view
+ * Now returns { ok: true, credit: { ... , items: [], payments: [] } }
  */
 async function getCredit(request, reply) {
   const creditId = Number(request.params.id);
@@ -53,10 +53,6 @@ async function getCredit(request, reply) {
 
 /**
  * GET /credits/open
- * Admin dashboard uses this for "open credits".
- *
- * In your new lifecycle, "open" usually means:
- * - PENDING + APPROVED (not rejected, not settled)
  */
 async function listOpenCredits(request, reply) {
   const q = request.query?.q ? String(request.query.q) : "";

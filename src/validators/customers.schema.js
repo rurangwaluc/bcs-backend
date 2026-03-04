@@ -4,6 +4,8 @@ const { z } = require("zod");
 const createCustomerSchema = z.object({
   name: z.string().min(2).max(120),
   phone: z.string().min(6).max(30),
+  tin: z.string().min(3).max(30).optional(),
+  address: z.string().min(2).max(200).optional(),
   notes: z.string().max(2000).optional(),
 });
 

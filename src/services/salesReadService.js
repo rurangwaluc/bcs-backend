@@ -84,6 +84,8 @@ async function listSales({ locationId, filters }) {
     ? new Date(dateToTs.getTime() + 24 * 60 * 60 * 1000)
     : null;
 
+  const lim = Math.min(Math.max(Number(limit) || 50, 1), 200);
+
   const res = await db.execute(sql`
     SELECT
       s.id,
@@ -104,17 +106,63 @@ async function listSales({ locationId, filters }) {
       COALESCE(c.name, s.customer_name) as "customerName",
       COALESCE(c.phone, s.customer_phone) as "customerPhone",
 
-      COALESCE(SUM(p.amount), 0) as "amountPaid"
+      -- ✅ payments sum (location-safe)
+      COALESCE(pay.sum_amount, 0)::int as "amountPaid",
+
+      -- ✅ credit info (one row max)
+      cr.id as "creditId",
+      cr.status as "creditStatus",
+      cr.amount::int as "creditAmount",
+      cr.created_at as "creditCreatedAt",
+      cr.settled_at as "creditSettledAt",
+
+      -- ✅ items preview (array of json objects)
+      COALESCE(items.items_preview, '[]'::json) as "itemsPreview"
 
     FROM sales s
     JOIN locations l ON l.id = s.location_id
     LEFT JOIN customers c ON c.id = s.customer_id
-
-    -- staff name
     LEFT JOIN users u ON u.id = s.seller_id
 
-    -- paid amount
-    LEFT JOIN payments p ON p.sale_id = s.id
+    -- ✅ LATERAL: sum payments per sale (no GROUP BY needed)
+    LEFT JOIN LATERAL (
+      SELECT SUM(p.amount)::int as sum_amount
+      FROM payments p
+      WHERE p.sale_id = s.id
+        AND p.location_id = s.location_id
+    ) pay ON TRUE
+
+    -- ✅ LATERAL: credit row per sale (if exists)
+    LEFT JOIN LATERAL (
+      SELECT
+        c2.id,
+        c2.status,
+        c2.amount,
+        c2.created_at,
+        c2.settled_at
+      FROM credits c2
+      WHERE c2.sale_id = s.id
+        AND c2.location_id = s.location_id
+      ORDER BY c2.id DESC
+      LIMIT 1
+    ) cr ON TRUE
+
+    -- ✅ LATERAL: items preview (top 3 items)
+    LEFT JOIN LATERAL (
+      SELECT json_agg(x ORDER BY x."productName") as items_preview
+      FROM (
+        SELECT
+          COALESCE(pr.name, CONCAT('Product #', si.product_id::text)) as "productName",
+          si.qty::int as "qty",
+          pr.sku as "sku"
+        FROM sale_items si
+        LEFT JOIN products pr
+          ON pr.id = si.product_id AND pr.location_id = s.location_id
+        WHERE si.sale_id = s.id
+        ORDER BY si.id ASC
+        LIMIT 3
+      ) x
+    ) items ON TRUE
 
     WHERE s.location_id = ${locationId}
 
@@ -135,22 +183,47 @@ async function listSales({ locationId, filters }) {
     ${dateFromTs ? sql`AND s.created_at >= ${dateFromTs}` : sql``}
     ${dateToNextDay ? sql`AND s.created_at < ${dateToNextDay}` : sql``}
 
-    GROUP BY
-      s.id, s.location_id, l.name, l.code,
-      s.status, s.total_amount, s.payment_method, s.created_at, s.updated_at,
-      s.seller_id, u.name,
-      s.customer_id, c.name, c.phone, s.customer_name, s.customer_phone
-
     ORDER BY s.created_at DESC
-    LIMIT ${Math.min(Math.max(Number(limit) || 50, 1), 200)}
+    LIMIT ${lim}
   `);
 
-  const rows = res.rows || res;
+  const rows = res.rows || res || [];
 
   return rows.map((r) => {
     const location = toLocationObj(r);
     const { locationName, locationCode, ...rest } = r;
-    return { ...rest, location };
+
+    // ✅ shape credit as an object (seller UI reads s.credit.*)
+    const credit = r.creditId
+      ? {
+          id: r.creditId,
+          status: r.creditStatus,
+          amount: Number(r.creditAmount || 0),
+          createdAt: r.creditCreatedAt,
+          settledAt: r.creditSettledAt,
+          paidAmount: Number(r.amountPaid || 0), // best available from payments sum
+        }
+      : null;
+
+    // itemsPreview already JSON from SQL
+    const itemsPreview = Array.isArray(r.itemsPreview) ? r.itemsPreview : [];
+
+    // Remove raw credit columns to avoid confusion
+    const {
+      creditId,
+      creditStatus,
+      creditAmount,
+      creditCreatedAt,
+      creditSettledAt,
+      ...clean
+    } = rest;
+
+    return {
+      ...clean,
+      location,
+      credit,
+      itemsPreview,
+    };
   });
 }
 

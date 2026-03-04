@@ -22,6 +22,16 @@ function normName(v) {
   return String(v).trim();
 }
 
+function normTin(v) {
+  if (v == null) return "";
+  return String(v).trim();
+}
+
+function normAddress(v) {
+  if (v == null) return "";
+  return String(v).trim();
+}
+
 function isUniqueViolation(err) {
   // Postgres unique violation = 23505
   return err && (err.code === "23505" || err.sqlState === "23505");
@@ -33,6 +43,8 @@ async function createCustomer({ locationId, actorId, data }) {
 
   const phone = normPhone(data?.phone);
   const name = normName(data?.name);
+  const tin = normTin(data?.tin);
+  const address = normAddress(data?.address);
 
   if (!phone) {
     const err = new Error("Phone is required");
@@ -56,9 +68,14 @@ async function createCustomer({ locationId, actorId, data }) {
   if (existing[0]) {
     const patch = {};
     if (name && existing[0].name !== name) patch.name = name;
+
+    if (tin) patch.tin = tin;
+    if (address) patch.address = address;
+
     if (data?.notes != null) patch.notes = String(data.notes).trim() || null;
 
     if (Object.keys(patch).length > 0) {
+      patch.updatedAt = new Date();
       const [updated] = await db
         .update(customers)
         .set(patch)
@@ -66,28 +83,33 @@ async function createCustomer({ locationId, actorId, data }) {
         .returning();
       return updated || existing[0];
     }
-
-    return existing[0];
   }
 
   // 2) Try insert (race-safe). If unique conflict happens, fetch existing.
   try {
+    const now = new Date();
+
     const [created] = await db
       .insert(customers)
       .values({
         locationId,
         name,
         phone,
+        tin: tin || null,
+        address: address || null,
         notes: data?.notes ? String(data.notes).trim().slice(0, 2000) : null,
+        createdAt: now,
+        updatedAt: now,
       })
       .returning();
 
     await db.insert(auditLogs).values({
-      userId: actorId,
+      locationId: user.locationId, // <-- add this
+      userId: user.id,
       action: "CUSTOMER_CREATE",
       entity: "customer",
-      entityId: created.id,
-      description: `Customer created: ${created.name} (${created.phone})`,
+      entityId: customer.id,
+      description: `Customer created: ${customer.name}`,
     });
 
     return created;
@@ -129,6 +151,8 @@ async function searchCustomers({ locationId, q }) {
       location_id as "locationId",
       name,
       phone,
+        tin,
+  address,
       created_at as "createdAt"
     FROM customers
     WHERE

@@ -31,13 +31,15 @@ async function listNotifications(request, reply) {
 }
 
 async function unreadCount(request, reply) {
-  const locationId = request.user?.locationId;
-  const userId = request.user?.id;
+  if (!request.user?.locationId || !request.user?.id) {
+    return reply.status(401).send({ error: "Unauthorized" });
+  }
 
   const c = await notificationService.unreadCount({
-    locationId,
-    recipientUserId: userId,
+    locationId: request.user.locationId,
+    recipientUserId: request.user.id,
   });
+
   return reply.send({ ok: true, unread: c });
 }
 
