@@ -1,4 +1,3 @@
-// backend/src/permissions/policy.js
 const ROLES = require("./roles");
 const ACTIONS = require("./actions");
 
@@ -94,14 +93,12 @@ const policy = {
     ACTIONS.SALE_VIEW,
     ACTIONS.SALE_MARK,
     ACTIONS.SALE_CANCEL,
-
-    // ✅ NEW: allow admin to fulfill sales too
     ACTIONS.SALE_FULFILL,
 
     ACTIONS.PAYMENT_RECORD,
     ACTIONS.PAYMENT_VIEW,
 
-    // ✅ Credits (real-world: Admin can do all credit ops)
+    // Credits
     ACTIONS.CREDIT_CREATE,
     ACTIONS.CREDIT_VIEW,
     ACTIONS.CREDIT_DECIDE,
@@ -126,6 +123,18 @@ const policy = {
     // Uploads
     ACTIONS.UPLOAD_CREATE,
     ACTIONS.UPLOAD_VIEW,
+
+    // Suppliers (procurement)
+    ACTIONS.SUPPLIER_CREATE,
+    ACTIONS.SUPPLIER_VIEW,
+    ACTIONS.SUPPLIER_UPDATE,
+    ACTIONS.SUPPLIER_DELETE,
+    ACTIONS.SUPPLIER_BILL_CREATE,
+    ACTIONS.SUPPLIER_BILL_VIEW,
+    ACTIONS.SUPPLIER_BILL_UPDATE,
+    ACTIONS.SUPPLIER_BILL_DELETE,
+    ACTIONS.SUPPLIER_BILL_PAYMENT_CREATE,
+    ACTIONS.SUPPLIER_REPORT_VIEW,
 
     // Legacy support (kept)
     ACTIONS.CASH_LEDGER_MANAGE,
@@ -175,7 +184,7 @@ const policy = {
     // Payments view
     ACTIONS.PAYMENT_VIEW,
 
-    // ✅ Credits: Manager approves/rejects, does NOT settle
+    // Credits: Manager approves/rejects, does NOT settle
     ACTIONS.CREDIT_VIEW,
     ACTIONS.CREDIT_DECIDE,
 
@@ -183,7 +192,6 @@ const policy = {
     ACTIONS.CASH_REPORT_VIEW,
     ACTIONS.CASH_RECONCILE_VIEW,
     ACTIONS.CASH_RECONCILE_CREATE,
-
     ACTIONS.CASH_LEDGER_VIEW,
 
     // Users view only
@@ -191,6 +199,13 @@ const policy = {
 
     // Uploads (view only)
     ACTIONS.UPLOAD_VIEW,
+
+    // Suppliers (view + create bills; payments remain owner/admin)
+    ACTIONS.SUPPLIER_VIEW,
+    ACTIONS.SUPPLIER_BILL_CREATE,
+    ACTIONS.SUPPLIER_BILL_VIEW,
+    ACTIONS.SUPPLIER_BILL_UPDATE,
+    ACTIONS.SUPPLIER_REPORT_VIEW,
 
     ACTIONS.MANAGER_DASHBOARD_VIEW,
     ACTIONS.CUSTOMER_VIEW,
@@ -232,7 +247,7 @@ const policy = {
     // Holdings
     ACTIONS.HOLDINGS_VIEW,
 
-    // ✅ NEW: Storekeeper fulfills sales (Option B)
+    // Storekeeper fulfills sales (Option B)
     ACTIONS.SALE_VIEW,
     ACTIONS.SALE_FULFILL,
 
@@ -269,7 +284,7 @@ const policy = {
     ACTIONS.NOTIFICATION_VIEW,
     ACTIONS.NOTIFICATION_MARK_READ,
 
-    // ✅ Credits: Seller can request credit + track status
+    // Credits: Seller can request credit + track status
     ACTIONS.CREDIT_CREATE,
     ACTIONS.CREDIT_VIEW,
 
@@ -314,7 +329,7 @@ const policy = {
     // Uploads (view only)
     ACTIONS.UPLOAD_VIEW,
 
-    // ✅ Credits: Cashier must SEE credits to settle them
+    // Credits: Cashier must SEE credits to settle them
     ACTIONS.CREDIT_VIEW,
     ACTIONS.CREDIT_SETTLE,
 

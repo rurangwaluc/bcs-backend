@@ -5,7 +5,6 @@ const { db } = require("../config/db");
 const { sql } = require("drizzle-orm");
 
 function toLocationObj(row) {
-  // row may include: locationId, locationName, locationCode
   if (!row || row.locationId == null) return null;
   return {
     id: String(row.locationId),
@@ -33,7 +32,9 @@ async function getSaleById({ locationId, saleId }) {
       s.canceled_by as "canceledBy",
       s.cancel_reason as "cancelReason",
       COALESCE(c.name, s.customer_name) as "customerName",
-      COALESCE(c.phone, s.customer_phone) as "customerPhone"
+      COALESCE(c.phone, s.customer_phone) as "customerPhone",
+      c.tin as "customerTin",
+      c.address as "customerAddress"
     FROM sales s
     JOIN locations l ON l.id = s.location_id
     LEFT JOIN customers c ON c.id = s.customer_id
@@ -62,10 +63,7 @@ async function getSaleById({ locationId, saleId }) {
 
   const items = itemsRes.rows || itemsRes;
 
-  // ✅ Add location object (keep locationId too)
   const location = toLocationObj(sale);
-
-  // Clean up extra join fields so response is tidy
   const { locationName, locationCode, ...rest } = sale;
 
   return { ...rest, location, items };
@@ -76,7 +74,6 @@ async function listSales({ locationId, filters }) {
 
   const pattern = q ? `%${String(q)}%` : null;
 
-  // Safer date range: created_at >= dateFrom AND created_at < (dateTo + 1 day)
   const dateFromTs = dateFrom ? new Date(dateFrom) : null;
   const dateToTs = dateTo ? new Date(dateTo) : null;
 
@@ -105,18 +102,17 @@ async function listSales({ locationId, filters }) {
       s.customer_id as "customerId",
       COALESCE(c.name, s.customer_name) as "customerName",
       COALESCE(c.phone, s.customer_phone) as "customerPhone",
+      c.tin as "customerTin",
+      c.address as "customerAddress",
 
-      -- ✅ payments sum (location-safe)
       COALESCE(pay.sum_amount, 0)::int as "amountPaid",
 
-      -- ✅ credit info (one row max)
       cr.id as "creditId",
       cr.status as "creditStatus",
       cr.amount::int as "creditAmount",
       cr.created_at as "creditCreatedAt",
       cr.settled_at as "creditSettledAt",
 
-      -- ✅ items preview (array of json objects)
       COALESCE(items.items_preview, '[]'::json) as "itemsPreview"
 
     FROM sales s
@@ -124,7 +120,6 @@ async function listSales({ locationId, filters }) {
     LEFT JOIN customers c ON c.id = s.customer_id
     LEFT JOIN users u ON u.id = s.seller_id
 
-    -- ✅ LATERAL: sum payments per sale (no GROUP BY needed)
     LEFT JOIN LATERAL (
       SELECT SUM(p.amount)::int as sum_amount
       FROM payments p
@@ -132,7 +127,6 @@ async function listSales({ locationId, filters }) {
         AND p.location_id = s.location_id
     ) pay ON TRUE
 
-    -- ✅ LATERAL: credit row per sale (if exists)
     LEFT JOIN LATERAL (
       SELECT
         c2.id,
@@ -147,7 +141,6 @@ async function listSales({ locationId, filters }) {
       LIMIT 1
     ) cr ON TRUE
 
-    -- ✅ LATERAL: items preview (top 3 items)
     LEFT JOIN LATERAL (
       SELECT json_agg(x ORDER BY x."productName") as items_preview
       FROM (
@@ -176,6 +169,8 @@ async function listSales({ locationId, filters }) {
           OR COALESCE(c.phone, s.customer_phone) ILIKE ${pattern}
           OR CAST(s.id AS TEXT) ILIKE ${pattern}
           OR COALESCE(u.name, '') ILIKE ${pattern}
+          OR COALESCE(c.tin, '') ILIKE ${pattern}
+          OR COALESCE(c.address, '') ILIKE ${pattern}
         )`
         : sql``
     }
@@ -193,7 +188,6 @@ async function listSales({ locationId, filters }) {
     const location = toLocationObj(r);
     const { locationName, locationCode, ...rest } = r;
 
-    // ✅ shape credit as an object (seller UI reads s.credit.*)
     const credit = r.creditId
       ? {
           id: r.creditId,
@@ -201,14 +195,12 @@ async function listSales({ locationId, filters }) {
           amount: Number(r.creditAmount || 0),
           createdAt: r.creditCreatedAt,
           settledAt: r.creditSettledAt,
-          paidAmount: Number(r.amountPaid || 0), // best available from payments sum
+          paidAmount: Number(r.amountPaid || 0),
         }
       : null;
 
-    // itemsPreview already JSON from SQL
     const itemsPreview = Array.isArray(r.itemsPreview) ? r.itemsPreview : [];
 
-    // Remove raw credit columns to avoid confusion
     const {
       creditId,
       creditStatus,

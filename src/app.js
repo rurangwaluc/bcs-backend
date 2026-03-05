@@ -1,5 +1,3 @@
-// backend/src/app.js
-
 const fastify = require("fastify");
 const rateLimit = require("@fastify/rate-limit");
 const cors = require("@fastify/cors");
@@ -59,6 +57,10 @@ const { creditReadRoutes } = require("./routes/credit.read.routes");
 
 const { reportsRoutes } = require("./routes/reports.routes");
 const { uploadsRoutes } = require("./routes/uploads.routes");
+
+// Suppliers (procurement)
+const { suppliersRoutes } = require("./routes/suppliers.routes");
+const { supplierBillsRoutes } = require("./routes/supplierBills.routes");
 
 function buildApp() {
   const app = fastify({ logger: true });
@@ -149,6 +151,10 @@ function buildApp() {
   app.register(reportsRoutes);
 
   app.register(uploadsRoutes);
+
+  // Suppliers (procurement)
+  app.register(suppliersRoutes);
+  app.register(supplierBillsRoutes);
 
   app.setErrorHandler((error, request, reply) => {
     request.log.error(error);

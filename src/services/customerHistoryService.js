@@ -1,3 +1,5 @@
+"use strict";
+
 const { db } = require("../config/db");
 const { sql } = require("drizzle-orm");
 
@@ -21,7 +23,7 @@ async function customerHistory({ locationId, customerId, limit = 50 }) {
       SELECT
         sale_id,
         location_id,
-        SUM(amount)::int AS refund_amount,
+        SUM(total_amount)::int AS refund_amount,
         COUNT(*)::int AS refund_count,
         MAX(created_at) AS last_refund_at
       FROM refunds
@@ -34,7 +36,7 @@ async function customerHistory({ locationId, customerId, limit = 50 }) {
       s.created_at AS "createdAt",
       s.seller_id AS "sellerId",
 
-      -- payment (1 per sale in your schema)
+      -- payments (can be multiple; but your query picks joined rows)
       p.id AS "paymentId",
       p.amount AS "paymentAmount",
       p.method AS "paymentMethod",
@@ -70,7 +72,7 @@ async function customerHistory({ locationId, customerId, limit = 50 }) {
 
   const rows = res.rows || res || [];
 
-  // Simple totals for owner dashboards / customer profile cards
+  // Totals
   let salesCount = 0;
   let salesTotal = 0;
   let paidTotal = 0;
@@ -81,7 +83,6 @@ async function customerHistory({ locationId, customerId, limit = 50 }) {
     salesCount += 1;
     salesTotal += Number(r.totalAmount || 0);
     paidTotal += Number(r.paymentAmount || 0);
-    // creditAmount exists when credit record exists
     creditTotal += Number(r.creditAmount || 0);
     refundsTotal += Number(r.refundAmount || 0);
   }

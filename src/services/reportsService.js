@@ -1,3 +1,4 @@
+// backend/src/services/reportsService.js
 const { db } = require("../config/db");
 const { sql } = require("drizzle-orm");
 
@@ -248,7 +249,8 @@ async function cashRefundsReport({ locationId, start, end, limit = 200 }) {
     SELECT
       r.id,
       r.sale_id AS "saleId",
-      r.amount,
+      -- refunds table uses total_amount (not amount)
+      r.total_amount AS "amount",
       r.reason,
       r.created_by_user_id AS "createdByUserId",
       r.created_at AS "createdAt"

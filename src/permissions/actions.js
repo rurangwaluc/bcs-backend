@@ -49,9 +49,9 @@ const ACTIONS = {
   // =====================
   // Notifications
   // =====================
-
   NOTIFICATION_VIEW: "NOTIFICATION_VIEW",
   NOTIFICATION_MARK_READ: "NOTIFICATION_MARK_READ",
+
   // =====================
   // Products
   // =====================
@@ -158,7 +158,6 @@ const ACTIONS = {
 
   // Legacy
   CASH_LEDGER_MANAGE: "CASH_LEDGER_MANAGE",
-
   CASH_LEDGER_VIEW: "CASH_LEDGER_VIEW",
 
   // =====================
@@ -167,7 +166,7 @@ const ACTIONS = {
   CREDIT_CREATE: "CREDIT_CREATE",
   CREDIT_VIEW: "CREDIT_VIEW",
   CREDIT_DECIDE: "CREDIT_DECIDE",
-  CREDIT_SETTLE: "CREDIT_SETTLE", // ✅ keep as a real action (not just "legacy")
+  CREDIT_SETTLE: "CREDIT_SETTLE",
 
   // Legacy
   CREDIT_READ: "CREDIT_READ",
@@ -190,6 +189,22 @@ const ACTIONS = {
   AUDIT_VIEW: "AUDIT_VIEW",
   MESSAGE_CREATE: "MESSAGE_CREATE",
   MESSAGE_VIEW: "MESSAGE_VIEW",
+
+  // =====================
+  // Suppliers (procurement)
+  // =====================
+  SUPPLIER_CREATE: "SUPPLIER_CREATE",
+  SUPPLIER_VIEW: "SUPPLIER_VIEW",
+  SUPPLIER_UPDATE: "SUPPLIER_UPDATE",
+  SUPPLIER_DELETE: "SUPPLIER_DELETE",
+
+  SUPPLIER_BILL_CREATE: "SUPPLIER_BILL_CREATE",
+  SUPPLIER_BILL_VIEW: "SUPPLIER_BILL_VIEW",
+  SUPPLIER_BILL_UPDATE: "SUPPLIER_BILL_UPDATE",
+  SUPPLIER_BILL_DELETE: "SUPPLIER_BILL_DELETE",
+
+  SUPPLIER_BILL_PAYMENT_CREATE: "SUPPLIER_BILL_PAYMENT_CREATE",
+  SUPPLIER_REPORT_VIEW: "SUPPLIER_REPORT_VIEW",
 };
 
 /**
@@ -215,7 +230,6 @@ ACTIONS.__ALIASES__ = {
   CREDIT_READ: ["CREDIT_VIEW"],
 
   // ❌ IMPORTANT: DO NOT alias CREDIT_SETTLE to CREDIT_DECIDE.
-  // If you previously had a different legacy settle action name, alias THAT legacy name to CREDIT_SETTLE instead.
 };
 
 module.exports = Object.freeze(ACTIONS);

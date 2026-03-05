@@ -104,12 +104,12 @@ async function createCustomer({ locationId, actorId, data }) {
       .returning();
 
     await db.insert(auditLogs).values({
-      locationId: user.locationId, // <-- add this
-      userId: user.id,
+      locationId,
+      userId: actorId,
       action: "CUSTOMER_CREATE",
       entity: "customer",
-      entityId: customer.id,
-      description: `Customer created: ${customer.name}`,
+      entityId: created.id,
+      description: `Customer created: ${created.name}`,
     });
 
     return created;
@@ -194,7 +194,16 @@ async function listCustomers({ locationId, limit = 50 }) {
   const lim = Math.max(1, Math.min(200, Number(limit) || 50));
 
   const res = await db.execute(sql`
-    SELECT id, location_id as "locationId", name, phone, created_at as "createdAt"
+    SELECT
+      id,
+      location_id as "locationId",
+      name,
+      phone,
+      tin,
+      address,
+      notes,
+      created_at as "createdAt",
+      updated_at as "updatedAt"
     FROM customers
     WHERE ${locationId == null ? sql`TRUE` : sql`location_id = ${locationId}`}
     ORDER BY created_at DESC
