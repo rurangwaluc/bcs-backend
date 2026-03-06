@@ -3,6 +3,11 @@ const { requirePermission } = require("../middleware/requirePermission");
 const {
   ownerSummary,
   ownerLocations,
+  createLocation,
+  updateLocation,
+  closeLocation,
+  reopenLocation,
+  archiveLocation,
 } = require("../controllers/ownerController");
 
 async function ownerRoutes(app) {
@@ -11,9 +16,40 @@ async function ownerRoutes(app) {
     { preHandler: [requirePermission(ACTIONS.OWNER_ONLY)] },
     ownerLocations,
   );
+
+  app.post(
+    "/owner/locations",
+    { preHandler: [requirePermission(ACTIONS.OWNER_ONLY)] },
+    createLocation,
+  );
+
+  app.patch(
+    "/owner/locations/:id",
+    { preHandler: [requirePermission(ACTIONS.OWNER_ONLY)] },
+    updateLocation,
+  );
+
+  app.post(
+    "/owner/locations/:id/close",
+    { preHandler: [requirePermission(ACTIONS.OWNER_ONLY)] },
+    closeLocation,
+  );
+
+  app.post(
+    "/owner/locations/:id/reopen",
+    { preHandler: [requirePermission(ACTIONS.OWNER_ONLY)] },
+    reopenLocation,
+  );
+
+  app.post(
+    "/owner/locations/:id/archive",
+    { preHandler: [requirePermission(ACTIONS.OWNER_ONLY)] },
+    archiveLocation,
+  );
+
   app.get(
     "/owner/summary",
-    { preHandler: [requirePermission(ACTIONS.DASHBOARD_OWNER_VIEW)] },
+    { preHandler: [requirePermission(ACTIONS.OWNER_ONLY)] },
     ownerSummary,
   );
 }

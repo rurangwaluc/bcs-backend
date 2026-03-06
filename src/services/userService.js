@@ -1,14 +1,19 @@
 const { db } = require("../config/db");
 const { users } = require("../db/schema/users.schema");
-const { locations } = require("../db/schema/locations.schema"); // ✅ NEW
+const { locations } = require("../db/schema/locations.schema");
 const { hashPassword } = require("../utils/password");
-const { eq, and } = require("drizzle-orm");
+const { eq, and, desc } = require("drizzle-orm");
 const ROLES = require("../permissions/roles");
 const { safeLogAudit } = require("./auditService");
 const AUDIT = require("../audit/actions");
 
-function isOwner(adminUser) {
-  return adminUser?.role === ROLES.OWNER;
+function isOwner(user) {
+  return String(user?.role || "").toLowerCase() === ROLES.OWNER;
+}
+
+function toInt(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : null;
 }
 
 function userSelectWithLocation() {
@@ -21,32 +26,112 @@ function userSelectWithLocation() {
     isActive: users.isActive,
     createdAt: users.createdAt,
     lastSeenAt: users.lastSeenAt,
-
-    // ✅ NEW: nested location object
     location: {
       id: locations.id,
       name: locations.name,
       code: locations.code,
+      status: locations.status,
     },
   };
 }
 
 function normalizeUserRow(row) {
-  // If join fails (no matching location), return location: null
   const loc = row?.location;
   const hasLoc = loc && loc.id != null;
-  return { ...row, location: hasLoc ? loc : null };
+
+  return {
+    ...row,
+    location: hasLoc ? loc : null,
+  };
 }
 
-async function getUserByIdWithLocation({ adminUser, userId }) {
+async function getLocationOrThrow(locationId) {
+  const id = toInt(locationId);
+  if (!id) {
+    const err = new Error("Invalid location");
+    err.code = "INVALID_LOCATION";
+    throw err;
+  }
+
   const rows = await db
-    .select(userSelectWithLocation())
-    .from(users)
-    .leftJoin(locations, eq(locations.id, users.locationId))
-    .where(and(eq(users.id, userId), eq(users.locationId, adminUser.locationId)))
+    .select({
+      id: locations.id,
+      name: locations.name,
+      code: locations.code,
+      status: locations.status,
+    })
+    .from(locations)
+    .where(eq(locations.id, id))
     .limit(1);
 
+  const location = rows[0];
+  if (!location) {
+    const err = new Error("Location not found");
+    err.code = "LOCATION_NOT_FOUND";
+    throw err;
+  }
+
+  return location;
+}
+
+async function ensureAssignableLocation(locationId) {
+  const location = await getLocationOrThrow(locationId);
+
+  if (location.status !== "ACTIVE") {
+    const err = new Error("Location is not active");
+    err.code = "LOCATION_NOT_ACTIVE";
+    throw err;
+  }
+
+  return location;
+}
+
+async function getUserByIdWithLocationForActor({ actorUser, userId }) {
+  const id = toInt(userId);
+  if (!id) return null;
+
+  const query = db
+    .select(userSelectWithLocation())
+    .from(users)
+    .leftJoin(locations, eq(locations.id, users.locationId));
+
+  const rows = isOwner(actorUser)
+    ? await query.where(eq(users.id, id)).limit(1)
+    : await query
+        .where(
+          and(eq(users.id, id), eq(users.locationId, actorUser.locationId)),
+        )
+        .limit(1);
+
   return rows[0] ? normalizeUserRow(rows[0]) : null;
+}
+
+async function getRawUserForActor({ actorUser, userId }) {
+  const id = toInt(userId);
+  if (!id) return null;
+
+  const query = db
+    .select({
+      id: users.id,
+      locationId: users.locationId,
+      name: users.name,
+      email: users.email,
+      role: users.role,
+      isActive: users.isActive,
+      createdAt: users.createdAt,
+      lastSeenAt: users.lastSeenAt,
+    })
+    .from(users);
+
+  const rows = isOwner(actorUser)
+    ? await query.where(eq(users.id, id)).limit(1)
+    : await query
+        .where(
+          and(eq(users.id, id), eq(users.locationId, actorUser.locationId)),
+        )
+        .limit(1);
+
+  return rows[0] || null;
 }
 
 async function locationHasOwner(locationId) {
@@ -59,10 +144,88 @@ async function locationHasOwner(locationId) {
   return !!rows[0];
 }
 
+function resolveCreateLocationId({ actorUser, data }) {
+  if (isOwner(actorUser)) {
+    const targetLocationId = toInt(data.locationId);
+    if (!targetLocationId) {
+      const err = new Error("Owner must choose a location");
+      err.code = "LOCATION_REQUIRED";
+      throw err;
+    }
+    return targetLocationId;
+  }
+
+  return actorUser.locationId;
+}
+
+function resolveUpdateLocationId({ actorUser, data, targetUser }) {
+  if (data.locationId === undefined) {
+    return targetUser.locationId;
+  }
+
+  if (!isOwner(actorUser)) {
+    const err = new Error("Only owner can move users across locations");
+    err.code = "LOCATION_CHANGE_FORBIDDEN";
+    throw err;
+  }
+
+  const targetLocationId = toInt(data.locationId);
+  if (!targetLocationId) {
+    const err = new Error("Invalid location");
+    err.code = "INVALID_LOCATION";
+    throw err;
+  }
+
+  return targetLocationId;
+}
+
+async function ensureEmailAvailableInLocation(
+  email,
+  locationId,
+  excludeUserId = null,
+) {
+  const normalizedEmail = String(email || "")
+    .trim()
+    .toLowerCase();
+  if (!normalizedEmail) {
+    const err = new Error("Email is required");
+    err.code = "INVALID_EMAIL";
+    throw err;
+  }
+
+  const rows = await db
+    .select({ id: users.id, email: users.email })
+    .from(users)
+    .where(
+      and(eq(users.locationId, locationId), eq(users.email, normalizedEmail)),
+    );
+
+  const existing = rows.find((row) => row.id !== excludeUserId);
+
+  if (existing) {
+    const err = new Error("Email already exists in this branch");
+    err.code = "DUPLICATE_EMAIL";
+    throw err;
+  }
+}
+
 async function createUser({ adminUser, data }) {
+  const targetLocationId = resolveCreateLocationId({
+    actorUser: adminUser,
+    data,
+  });
+
+  await ensureAssignableLocation(targetLocationId);
+  await ensureEmailAvailableInLocation(data.email, targetLocationId);
+
   if (data.role === ROLES.OWNER) {
-    const hasOwner = await locationHasOwner(adminUser.locationId);
+    const hasOwner = await locationHasOwner(targetLocationId);
     if (hasOwner && !isOwner(adminUser)) {
+      const err = new Error("Only owner can create owner users");
+      err.code = "OWNER_ONLY";
+      throw err;
+    }
+    if (!isOwner(adminUser)) {
       const err = new Error("Only owner can create owner users");
       err.code = "OWNER_ONLY";
       throw err;
@@ -71,23 +234,12 @@ async function createUser({ adminUser, data }) {
 
   const passwordHash = hashPassword(data.password);
 
-  const existing = await db
-    .select()
-    .from(users)
-    .where(and(eq(users.locationId, adminUser.locationId), eq(users.email, data.email)));
-
-  if (existing[0]) {
-    const err = new Error("Email already exists");
-    err.code = "DUPLICATE_EMAIL";
-    throw err;
-  }
-
   const [created] = await db
     .insert(users)
     .values({
-      locationId: adminUser.locationId,
-      name: data.name,
-      email: data.email,
+      locationId: targetLocationId,
+      name: String(data.name).trim(),
+      email: String(data.email).trim().toLowerCase(),
       passwordHash,
       role: data.role,
       isActive: data.isActive ?? true,
@@ -96,26 +248,36 @@ async function createUser({ adminUser, data }) {
     .returning({ id: users.id });
 
   await safeLogAudit({
-    locationId: adminUser.locationId,
+    locationId: targetLocationId,
     userId: adminUser.id,
     action: AUDIT.USER_CREATE,
     entity: "user",
     entityId: created.id,
-    description: `Created user ${data.email} role=${data.role}`,
-    meta: { role: data.role, isActive: data.isActive ?? true },
+    description: `Created user ${String(data.email).trim().toLowerCase()} role=${data.role}`,
+    meta: {
+      role: data.role,
+      isActive: data.isActive ?? true,
+      locationId: targetLocationId,
+    },
   });
 
-  // ✅ Return enriched user (with location)
-  const enriched = await getUserByIdWithLocation({ adminUser, userId: created.id });
-  return enriched;
+  return getUserByIdWithLocationForActor({
+    actorUser: adminUser,
+    userId: created.id,
+  });
 }
 
 async function listUsers({ adminUser }) {
-  const rows = await db
+  const query = db
     .select(userSelectWithLocation())
     .from(users)
-    .leftJoin(locations, eq(locations.id, users.locationId))
-    .where(eq(users.locationId, adminUser.locationId));
+    .leftJoin(locations, eq(locations.id, users.locationId));
+
+  const rows = isOwner(adminUser)
+    ? await query.orderBy(desc(users.createdAt), desc(users.id))
+    : await query
+        .where(eq(users.locationId, adminUser.locationId))
+        .orderBy(desc(users.createdAt), desc(users.id));
 
   return rows.map(normalizeUserRow);
 }
@@ -127,44 +289,72 @@ async function updateUser({ adminUser, targetUserId, data }) {
     throw err;
   }
 
+  const before = await getRawUserForActor({
+    actorUser: adminUser,
+    userId: targetUserId,
+  });
+
+  if (!before) {
+    const err = new Error("User not found");
+    err.code = "NOT_FOUND";
+    throw err;
+  }
+
   if (data.role === ROLES.OWNER && !isOwner(adminUser)) {
     const err = new Error("Only owner can promote someone to owner");
     err.code = "OWNER_ONLY";
     throw err;
   }
 
-  const target = await db
-    .select({ id: users.id, name: users.name, role: users.role, isActive: users.isActive, email: users.email })
-    .from(users)
-    .where(and(eq(users.id, targetUserId), eq(users.locationId, adminUser.locationId)))
-    .limit(1);
-
-  if (!target[0]) {
-    const err = new Error("User not found");
-    err.code = "NOT_FOUND";
+  if (before.role === ROLES.OWNER && !isOwner(adminUser)) {
+    const err = new Error("Only owner can modify owner users");
+    err.code = "OWNER_ONLY";
     throw err;
   }
 
-  const before = target[0];
+  const nextLocationId = resolveUpdateLocationId({
+    actorUser: adminUser,
+    data,
+    targetUser: before,
+  });
+
+  if (nextLocationId !== before.locationId) {
+    await ensureAssignableLocation(nextLocationId);
+  }
+
+  const nextEmail = String(before.email || "")
+    .trim()
+    .toLowerCase();
+  await ensureEmailAvailableInLocation(nextEmail, nextLocationId, before.id);
 
   const updates = {};
-  if (data.name !== undefined) updates.name = data.name;
+  if (data.name !== undefined) updates.name = String(data.name).trim();
   if (data.role !== undefined) updates.role = data.role;
   if (data.isActive !== undefined) updates.isActive = data.isActive;
+  if (nextLocationId !== before.locationId) updates.locationId = nextLocationId;
 
   const [updated] = await db
     .update(users)
     .set(updates)
-    .where(and(eq(users.id, targetUserId), eq(users.locationId, adminUser.locationId)))
+    .where(eq(users.id, targetUserId))
     .returning({ id: users.id });
 
   const changes = {};
-  if (data.name !== undefined) changes.name = { from: before.name, to: data.name };
-  if (data.role !== undefined) changes.role = { from: before.role, to: data.role };
-  if (data.isActive !== undefined) changes.isActive = { from: before.isActive, to: data.isActive };
+  if (data.name !== undefined) {
+    changes.name = { from: before.name, to: String(data.name).trim() };
+  }
+  if (data.role !== undefined) {
+    changes.role = { from: before.role, to: data.role };
+  }
+  if (data.isActive !== undefined) {
+    changes.isActive = { from: before.isActive, to: data.isActive };
+  }
+  if (nextLocationId !== before.locationId) {
+    changes.locationId = { from: before.locationId, to: nextLocationId };
+  }
 
   await safeLogAudit({
-    locationId: adminUser.locationId,
+    locationId: nextLocationId,
     userId: adminUser.id,
     action: AUDIT.USER_UPDATE,
     entity: "user",
@@ -173,9 +363,10 @@ async function updateUser({ adminUser, targetUserId, data }) {
     meta: changes,
   });
 
-  // ✅ Return enriched user (with location)
-  const enriched = await getUserByIdWithLocation({ adminUser, userId: updated.id });
-  return enriched;
+  return getUserByIdWithLocationForActor({
+    actorUser: adminUser,
+    userId: updated.id,
+  });
 }
 
 async function deactivateUser({ adminUser, targetUserId }) {
@@ -185,19 +376,16 @@ async function deactivateUser({ adminUser, targetUserId }) {
     throw err;
   }
 
-  const target = await db
-    .select({ id: users.id, isActive: users.isActive, role: users.role, email: users.email })
-    .from(users)
-    .where(and(eq(users.id, targetUserId), eq(users.locationId, adminUser.locationId)))
-    .limit(1);
+  const before = await getRawUserForActor({
+    actorUser: adminUser,
+    userId: targetUserId,
+  });
 
-  if (!target[0]) {
+  if (!before) {
     const err = new Error("User not found");
     err.code = "NOT_FOUND";
     throw err;
   }
-
-  const before = target[0];
 
   if (before.role === ROLES.OWNER && !isOwner(adminUser)) {
     const err = new Error("Only owner can deactivate owner users");
@@ -206,29 +394,32 @@ async function deactivateUser({ adminUser, targetUserId }) {
   }
 
   if (!before.isActive) {
-    const enriched = await getUserByIdWithLocation({ adminUser, userId: before.id });
-    return enriched;
+    return getUserByIdWithLocationForActor({
+      actorUser: adminUser,
+      userId: before.id,
+    });
   }
 
   const [updated] = await db
     .update(users)
     .set({ isActive: false })
-    .where(and(eq(users.id, targetUserId), eq(users.locationId, adminUser.locationId)))
+    .where(eq(users.id, targetUserId))
     .returning({ id: users.id });
 
   await safeLogAudit({
-    locationId: adminUser.locationId,
+    locationId: before.locationId,
     userId: adminUser.id,
     action: AUDIT.USER_DEACTIVATE,
     entity: "user",
     entityId: updated.id,
     description: `Deactivated user ${before.email}`,
-    meta: { from: true, to: false },
+    meta: { isActive: { from: true, to: false } },
   });
 
-  // ✅ Return enriched user (with location)
-  const enriched = await getUserByIdWithLocation({ adminUser, userId: updated.id });
-  return enriched;
+  return getUserByIdWithLocationForActor({
+    actorUser: adminUser,
+    userId: updated.id,
+  });
 }
 
 module.exports = { createUser, listUsers, updateUser, deactivateUser };

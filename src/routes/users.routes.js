@@ -15,28 +15,28 @@ async function usersRoutes(app) {
   app.post(
     "/users",
     { preHandler: [requirePermission(ACTIONS.USER_CREATE)] },
-    createUser
+    createUser,
   );
 
   // View users
   app.get(
     "/users",
     { preHandler: [requirePermission(ACTIONS.USER_VIEW)] },
-    listUsers
+    listUsers,
   );
 
   // Update user (PATCH)
   app.patch(
     "/users/:id",
     { preHandler: [requirePermission(ACTIONS.USER_UPDATE)] },
-    updateUser
+    updateUser,
   );
 
   // Deactivate user (real world "delete")
   app.delete(
     "/users/:id",
     { preHandler: [requirePermission(ACTIONS.USER_DELETE)] },
-    deleteUser
+    deleteUser,
   );
 }
 
