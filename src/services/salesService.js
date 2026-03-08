@@ -1,4 +1,3 @@
-// backend/src/services/salesService.js
 const { db } = require("../config/db");
 const notificationService = require("./notificationService");
 const { sales } = require("../db/schema/sales.schema");
@@ -8,7 +7,7 @@ const { inventoryBalances } = require("../db/schema/inventory.schema");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
 const { credits } = require("../db/schema/credits.schema");
 const { customers } = require("../db/schema/customers.schema");
-const { eq, and, inArray, sql } = require("drizzle-orm");
+const { eq, and, inArray } = require("drizzle-orm");
 
 /**
  * Option B (NO holdings):
@@ -19,13 +18,12 @@ const { eq, and, inArray, sql } = require("drizzle-orm");
  * Statuses:
  * - DRAFT
  * - FULFILLED
- * - PENDING                (UI shows CREDIT)
+ * - PENDING
  * - AWAITING_PAYMENT_RECORD
  * - COMPLETED
  * - CANCELLED
  */
 
-// Strict payment methods for seller marking PAID
 const PAYMENT_METHODS = new Set(["CASH", "MOMO", "BANK"]);
 
 function toInt(n) {
@@ -83,7 +81,6 @@ function applySaleDiscount(subtotal, discountPercent, discountAmount) {
   };
 }
 
-// salesService.js (add helpers near top if not present)
 function normPhone(v) {
   if (v == null) return "";
   return String(v)
@@ -106,9 +103,6 @@ async function createSale({
   discountPercent,
   discountAmount,
 }) {
-  // -------------------------
-  // Local helpers (stay inside to avoid mismatch)
-  // -------------------------
   function normPhone(v) {
     if (v == null) return "";
     return String(v)
@@ -146,12 +140,8 @@ async function createSale({
 
   const typedName = normName(customerName);
   const typedPhone = normPhone(customerPhone);
-
-  // If caller did not provide customerId, enforce phone+name for auto-create/link
-  // (You can relax this later if you want anonymous walk-in customers.)
   const incomingCustomerId = toId(customerId);
 
-  // items validation early
   const rawItems = Array.isArray(items) ? items : [];
   const ids = [
     ...new Set(rawItems.map((x) => Number(x?.productId)).filter((x) => x > 0)),
@@ -163,9 +153,6 @@ async function createSale({
   }
 
   return db.transaction(async (tx) => {
-    // -------------------------
-    // 1) Load products
-    // -------------------------
     const prodRows = await tx
       .select()
       .from(products)
@@ -173,9 +160,6 @@ async function createSale({
 
     const prodMap = new Map(prodRows.map((p) => [Number(p.id), p]));
 
-    // -------------------------
-    // 2) Build lines + totals (enforce discount rules)
-    // -------------------------
     let strictMaxDisc = 100;
     const lines = [];
     let subtotal = 0;
@@ -201,8 +185,6 @@ async function createSale({
       }
 
       const sellingPrice = toInt(prod.sellingPrice ?? prod.selling_price ?? 0);
-
-      // Unit price: default to sellingPrice if not provided
       const requestedUnit =
         it?.unitPrice == null ? sellingPrice : toInt(it.unitPrice);
 
@@ -296,12 +278,8 @@ async function createSale({
 
     const saleDisc = applySaleDiscount(subtotal, salePct, discountAmount);
 
-    // -------------------------
-    // 3) Resolve customer (prefer explicit customerId; else find-or-create by phone)
-    // -------------------------
     let effectiveCustomerId = incomingCustomerId;
 
-    // If caller provided customerId, verify it belongs to location
     if (effectiveCustomerId) {
       const rows = await tx
         .select()
@@ -320,16 +298,13 @@ async function createSale({
         throw err;
       }
     } else {
-      // No customerId => we can link/create by phone
       if (!typedPhone || !typedName) {
-        // keep it strict because your CREDIT flow requires customer linkage
         const err = new Error("Customer name and phone are required");
         err.code = "MISSING_CUSTOMER_FIELDS";
         err.debug = { customerName: !!typedName, customerPhone: !!typedPhone };
         throw err;
       }
 
-      // Find by phone (location scoped)
       const existing = await tx
         .select()
         .from(customers)
@@ -340,7 +315,6 @@ async function createSale({
       if (existing[0]) {
         effectiveCustomerId = Number(existing[0].id);
 
-        // Optionally update name if improved
         if (typedName && String(existing[0].name || "").trim() !== typedName) {
           await tx
             .update(customers)
@@ -348,8 +322,6 @@ async function createSale({
             .where(eq(customers.id, existing[0].id));
         }
       } else {
-        // Create customer (race-safe: if unique exists on (locationId, phone), this will avoid duplicates)
-        // 1) attempt insert
         await tx
           .insert(customers)
           .values({
@@ -361,7 +333,6 @@ async function createSale({
           })
           .onConflictDoNothing();
 
-        // 2) re-select (works whether inserted by us or another concurrent request)
         const after = await tx
           .select()
           .from(customers)
@@ -382,22 +353,15 @@ async function createSale({
       }
     }
 
-    // -------------------------
-    // 4) Insert sale + items
-    // -------------------------
     const now = new Date();
     const [sale] = await tx
       .insert(sales)
       .values({
         locationId: locId,
         sellerId: sellId,
-
         customerId: effectiveCustomerId || null,
-
-        // Snapshot fields (normalized)
         customerName: typedName || null,
         customerPhone: typedPhone || null,
-
         status: "DRAFT",
         totalAmount: saleDisc.totalAmount,
         paymentMethod: null,
@@ -426,12 +390,6 @@ async function createSale({
       description: `Sale #${sale.id} created (DRAFT), total=${saleDisc.totalAmount}`,
     });
 
-    console.log("[NOTIF TEST] about to notify store_keeper for sale", {
-      locId,
-      sellId,
-      saleId: sale.id,
-    });
-
     await notificationService.notifyRoles({
       locationId: locId,
       roles: ["store_keeper"],
@@ -442,14 +400,13 @@ async function createSale({
       priority: "high",
       entity: "sale",
       entityId: Number(sale.id),
-
-      // ✅ IMPORTANT: use same transaction connection
       tx,
     });
 
     return sale;
   });
 }
+
 async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
   return db.transaction(async (tx) => {
     const saleRows = await tx
@@ -546,25 +503,17 @@ async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
   });
 }
 
-/**
- * ✅ Seller finalizes AFTER fulfill:
- * - If status=PAID => sale.status -> AWAITING_PAYMENT_RECORD AND persist paymentMethod
- * - If status=PENDING => sale.status -> PENDING AND clear paymentMethod
- *
- * ✅ CREDIT rule:
- * - When seller marks CREDIT (PENDING), the system auto-creates a credit row
- * - Uses DB unique index (location_id, sale_id) to avoid duplicates
- */
 async function markSale({
   locationId,
   saleId,
   status,
   paymentMethod,
-  userId, // controller uses this
-  sellerId, // support old callers
+  userId,
+  sellerId,
+  bypassOwnershipCheck = false,
 }) {
   return db.transaction(async (tx) => {
-    const actorId = Number(sellerId ?? userId);
+    const actorId = Number(userId ?? sellerId);
     if (!Number.isInteger(actorId) || actorId <= 0) {
       const err = new Error("Invalid user");
       err.code = "BAD_USER";
@@ -583,8 +532,7 @@ async function markSale({
       throw err;
     }
 
-    // Only the seller who created it can mark
-    if (Number(sale.sellerId) !== actorId) {
+    if (!bypassOwnershipCheck && Number(sale.sellerId) !== actorId) {
       const err = new Error("Forbidden");
       err.code = "FORBIDDEN";
       throw err;
@@ -602,7 +550,6 @@ async function markSale({
     const raw = String(status || "").toUpperCase();
     const nextStatus = raw === "PAID" ? "AWAITING_PAYMENT_RECORD" : "PENDING";
 
-    // Validate + normalize method ONLY for PAID
     let methodSafe = null;
     if (raw === "PAID") {
       const m = String(paymentMethod || "").toUpperCase();
@@ -615,7 +562,6 @@ async function markSale({
       methodSafe = m;
     }
 
-    // If already in target status, still ensure method consistency for paid-like
     if (current === nextStatus) {
       if (nextStatus === "AWAITING_PAYMENT_RECORD") {
         const existing = String(sale.paymentMethod || "").toUpperCase();
@@ -641,7 +587,6 @@ async function markSale({
       return sale;
     }
 
-    // Update sale status + paymentMethod (only set when PAID)
     const patch = {
       status: nextStatus,
       updatedAt: new Date(),
@@ -655,10 +600,6 @@ async function markSale({
       .where(eq(sales.id, saleId))
       .returning();
 
-    /**
-     * ✅ If marked CREDIT (PENDING), auto-create credit row.
-     * Lock: credit must have customerId, so sale must be linked to a customer.
-     */
     if (nextStatus === "PENDING") {
       if (!sale.customerId) {
         const err = new Error(
@@ -668,9 +609,6 @@ async function markSale({
         throw err;
       }
 
-      // ✅ Race-safe: rely on unique index (location_id, sale_id)
-      // Your schema already has:
-      // uniqueIndex("credits_sale_location_unique").on(t.locationId, t.saleId)
       await tx
         .insert(credits)
         .values({
@@ -698,9 +636,7 @@ async function markSale({
           : `Sale #${saleId} marked CREDIT -> ${nextStatus}`,
     });
 
-    // 🔔 Notify cashier + manager when seller marks PAID (awaiting payment record)
     if (nextStatus === "AWAITING_PAYMENT_RECORD") {
-      // Notify roles in the same location (active users only)
       await notificationService.notifyRoles({
         locationId,
         roles: ["cashier", "manager"],

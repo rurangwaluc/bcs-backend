@@ -8,6 +8,7 @@ const supplierCreateSchema = z.object({
   country: z.string().trim().max(120).optional(),
   city: z.string().trim().max(120).optional(),
   sourceType: z.enum(["LOCAL", "ABROAD"]).optional(),
+  defaultCurrency: z.enum(["RWF", "USD"]).optional(),
   address: z.string().trim().max(800).optional(),
   notes: z.string().trim().max(2000).optional(),
   isActive: z.boolean().optional(),

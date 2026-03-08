@@ -1,4 +1,4 @@
-// backend/src/services/customerService.js
+"use strict";
 
 const { db } = require("../config/db");
 const { customers } = require("../db/schema/customers.schema");
@@ -6,10 +6,6 @@ const { auditLogs } = require("../db/schema/audit_logs.schema");
 const { eq, and } = require("drizzle-orm");
 const { sql } = require("drizzle-orm");
 
-/**
- * Normalize phone so duplicates like "0788 123 456" vs "0788123456" don't create 2 customers.
- * Keep it simple (no country parsing).
- */
 function normPhone(v) {
   if (v == null) return "";
   return String(v)
@@ -32,9 +28,38 @@ function normAddress(v) {
   return String(v).trim();
 }
 
+function normNotes(v) {
+  if (v == null) return "";
+  return String(v).trim();
+}
+
+function toInt(v, fallback = null) {
+  if (v === undefined || v === null || v === "") return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
 function isUniqueViolation(err) {
-  // Postgres unique violation = 23505
   return err && (err.code === "23505" || err.sqlState === "23505");
+}
+
+async function writeAudit({
+  locationId,
+  actorId,
+  action,
+  entityId,
+  description,
+  meta = null,
+}) {
+  await db.insert(auditLogs).values({
+    locationId,
+    userId: actorId,
+    action,
+    entity: "customer",
+    entityId,
+    description,
+    meta,
+  });
 }
 
 async function createCustomer({ locationId, actorId, data }) {
@@ -45,19 +70,20 @@ async function createCustomer({ locationId, actorId, data }) {
   const name = normName(data?.name);
   const tin = normTin(data?.tin);
   const address = normAddress(data?.address);
+  const notes = normNotes(data?.notes);
 
   if (!phone) {
     const err = new Error("Phone is required");
     err.code = "VALIDATION";
     throw err;
   }
+
   if (!name) {
     const err = new Error("Name is required");
     err.code = "VALIDATION";
     throw err;
   }
 
-  // 1) Fast path: exists
   const existing = await db
     .select()
     .from(customers)
@@ -66,26 +92,40 @@ async function createCustomer({ locationId, actorId, data }) {
     );
 
   if (existing[0]) {
+    const current = existing[0];
     const patch = {};
-    if (name && existing[0].name !== name) patch.name = name;
 
-    if (tin) patch.tin = tin;
-    if (address) patch.address = address;
-
-    if (data?.notes != null) patch.notes = String(data.notes).trim() || null;
+    if (name && current.name !== name) patch.name = name;
+    if (tin !== (current.tin || "")) patch.tin = tin || null;
+    if (address !== (current.address || "")) patch.address = address || null;
+    if (notes !== (current.notes || "")) patch.notes = notes || null;
 
     if (Object.keys(patch).length > 0) {
       patch.updatedAt = new Date();
+
       const [updated] = await db
         .update(customers)
         .set(patch)
-        .where(eq(customers.id, existing[0].id))
+        .where(eq(customers.id, current.id))
         .returning();
-      return updated || existing[0];
+
+      await writeAudit({
+        locationId,
+        actorId,
+        action: "CUSTOMER_UPDATE",
+        entityId: current.id,
+        description: `Customer updated: ${updated?.name || current.name}`,
+        meta: {
+          fields: Object.keys(patch).filter((k) => k !== "updatedAt"),
+        },
+      });
+
+      return updated || current;
     }
+
+    return current;
   }
 
-  // 2) Try insert (race-safe). If unique conflict happens, fetch existing.
   try {
     const now = new Date();
 
@@ -97,19 +137,21 @@ async function createCustomer({ locationId, actorId, data }) {
         phone,
         tin: tin || null,
         address: address || null,
-        notes: data?.notes ? String(data.notes).trim().slice(0, 2000) : null,
+        notes: notes || null,
         createdAt: now,
         updatedAt: now,
       })
       .returning();
 
-    await db.insert(auditLogs).values({
+    await writeAudit({
       locationId,
-      userId: actorId,
+      actorId,
       action: "CUSTOMER_CREATE",
-      entity: "customer",
       entityId: created.id,
       description: `Customer created: ${created.name}`,
+      meta: {
+        phone: created.phone,
+      },
     });
 
     return created;
@@ -133,84 +175,123 @@ async function searchCustomers({ locationId, q }) {
   if (!qq) return [];
 
   const namePattern = `%${qq}%`;
-
-  // allow searching phone even if staff types spaces/dashes
   const qPhone = normPhone(qq);
   const phonePattern = qPhone ? `%${qPhone}%` : null;
 
-  // For ranking:
-  // 1) exact phone match (strongest)
-  // 2) phone starts with query
-  // 3) phone contains query
-  // 4) name contains query
-  //
-  // Then newest first
   const res = await db.execute(sql`
     SELECT
-      id,
-      location_id as "locationId",
-      name,
-      phone,
-        tin,
-  address,
-      created_at as "createdAt"
-    FROM customers
+      c.id,
+      c.location_id as "locationId",
+      l.name as "locationName",
+      l.code as "locationCode",
+      c.name,
+      c.phone,
+      c.tin,
+      c.address,
+      c.notes,
+      c.created_at as "createdAt",
+      c.updated_at as "updatedAt"
+    FROM customers c
+    LEFT JOIN locations l ON l.id = c.location_id
     WHERE
-      ${locationId == null ? sql`TRUE` : sql`location_id = ${locationId}`}
+      ${locationId == null ? sql`TRUE` : sql`c.location_id = ${locationId}`}
       AND (
-        name ILIKE ${namePattern}
-        ${phonePattern ? sql`OR phone ILIKE ${phonePattern}` : sql``}
+        c.name ILIKE ${namePattern}
+        ${phonePattern ? sql`OR c.phone ILIKE ${phonePattern}` : sql``}
       )
     ORDER BY
       ${
         qPhone
           ? sql`
-              CASE
-                WHEN phone = ${qPhone} THEN 0
-                WHEN phone ILIKE ${qPhone + "%"} THEN 1
-                WHEN phone ILIKE ${"%" + qPhone + "%"} THEN 2
-                WHEN name ILIKE ${namePattern} THEN 3
-                ELSE 4
-              END
-            `
+            CASE
+              WHEN c.phone = ${qPhone} THEN 0
+              WHEN c.phone ILIKE ${qPhone + "%"} THEN 1
+              WHEN c.phone ILIKE ${"%" + qPhone + "%"} THEN 2
+              WHEN c.name ILIKE ${namePattern} THEN 3
+              ELSE 4
+            END
+          `
           : sql`
-              CASE
-                WHEN name ILIKE ${namePattern} THEN 0
-                ELSE 1
-              END
-            `
+            CASE
+              WHEN c.name ILIKE ${namePattern} THEN 0
+              ELSE 1
+            END
+          `
       },
-      created_at DESC
+      c.created_at DESC
     LIMIT 20
   `);
 
   return res.rows || res;
 }
 
-// ✅ NEW: list customers (for dropdowns / browsing)
-// - staff: location-scoped
-// - owner: can pass locationId or null for all
-async function listCustomers({ locationId, limit = 50 }) {
+async function listCustomers({ locationId, limit = 50, cursor = null }) {
   const lim = Math.max(1, Math.min(200, Number(limit) || 50));
+  const cursorId = toInt(cursor, null);
 
   const res = await db.execute(sql`
     SELECT
-      id,
-      location_id as "locationId",
-      name,
-      phone,
-      tin,
-      address,
-      notes,
-      created_at as "createdAt",
-      updated_at as "updatedAt"
-    FROM customers
-    WHERE ${locationId == null ? sql`TRUE` : sql`location_id = ${locationId}`}
-    ORDER BY created_at DESC
+      c.id,
+      c.location_id as "locationId",
+      l.name as "locationName",
+      l.code as "locationCode",
+      c.name,
+      c.phone,
+      c.tin,
+      c.address,
+      c.notes,
+      c.created_at as "createdAt",
+      c.updated_at as "updatedAt",
+
+      COALESCE((
+        SELECT COUNT(*)::int
+        FROM sales s
+        WHERE s.customer_id = c.id
+          AND s.location_id = c.location_id
+      ), 0) as "salesCount",
+
+      COALESCE((
+        SELECT SUM(s.total_amount)::bigint
+        FROM sales s
+        WHERE s.customer_id = c.id
+          AND s.location_id = c.location_id
+      ), 0) as "salesTotalAmount",
+
+      COALESCE((
+        SELECT SUM(cr.amount)::bigint
+        FROM credits cr
+        WHERE cr.customer_id = c.id
+          AND cr.location_id = c.location_id
+          AND cr.status NOT IN ('SETTLED', 'CANCELLED')
+      ), 0) as "openCreditAmount",
+
+      (
+        SELECT MAX(s.created_at)
+        FROM sales s
+        WHERE s.customer_id = c.id
+          AND s.location_id = c.location_id
+      ) as "lastSaleAt"
+
+    FROM customers c
+    LEFT JOIN locations l ON l.id = c.location_id
+    WHERE
+      ${locationId == null ? sql`TRUE` : sql`c.location_id = ${locationId}`}
+      AND ${cursorId == null ? sql`TRUE` : sql`c.id < ${cursorId}`}
+    ORDER BY c.id DESC
     LIMIT ${lim}
   `);
 
-  return res.rows || res;
+  const rows = res.rows || res || [];
+  const nextCursor = rows.length === lim ? rows[rows.length - 1].id : null;
+
+  return {
+    customers: rows,
+    nextCursor,
+  };
 }
 
-module.exports = { createCustomer, searchCustomers, listCustomers };
+module.exports = {
+  createCustomer,
+  searchCustomers,
+  listCustomers,
+};

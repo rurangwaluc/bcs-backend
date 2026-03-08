@@ -7,6 +7,7 @@ const {
   getSupplier,
   updateSupplier,
   deleteSupplier,
+  supplierSummary,
 } = require("../controllers/suppliersController");
 
 function suppliersRoutes(app, _opts, done) {
@@ -14,6 +15,12 @@ function suppliersRoutes(app, _opts, done) {
     "/suppliers",
     { preHandler: requirePermission(ACTIONS.SUPPLIER_VIEW) },
     listSuppliers,
+  );
+
+  app.get(
+    "/suppliers/summary",
+    { preHandler: requirePermission(ACTIONS.SUPPLIER_REPORT_VIEW) },
+    supplierSummary,
   );
 
   app.post(

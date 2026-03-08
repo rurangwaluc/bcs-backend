@@ -12,54 +12,59 @@ function clampInt(n, min, max, fallback) {
 async function customerHistory({ locationId, customerId, limit = 50 }) {
   const lim = clampInt(limit, 1, 200, 50);
 
-  // Location filter:
-  // - locationId is a number => restrict
-  // - locationId is null/undefined => owner/global (all locations)
   const locationClause =
     locationId == null ? sql`TRUE` : sql`s.location_id = ${locationId}`;
 
   const res = await db.execute(sql`
-    WITH refunds_agg AS (
+    WITH payments_agg AS (
       SELECT
-        sale_id,
-        location_id,
-        SUM(total_amount)::int AS refund_amount,
+        p.sale_id,
+        p.location_id,
+        SUM(p.amount)::bigint AS payment_amount,
+        COUNT(*)::int AS payment_count,
+        MAX(p.created_at) AS last_payment_at,
+        MAX(p.method) AS last_payment_method
+      FROM payments p
+      GROUP BY p.sale_id, p.location_id
+    ),
+    refunds_agg AS (
+      SELECT
+        r.sale_id,
+        r.location_id,
+        SUM(r.total_amount)::bigint AS refund_amount,
         COUNT(*)::int AS refund_count,
-        MAX(created_at) AS last_refund_at
-      FROM refunds
-      GROUP BY sale_id, location_id
+        MAX(r.created_at) AS last_refund_at
+      FROM refunds r
+      GROUP BY r.sale_id, r.location_id
     )
     SELECT
       s.id,
+      s.location_id as "locationId",
       s.status,
-      s.total_amount AS "totalAmount",
-      s.created_at AS "createdAt",
-      s.seller_id AS "sellerId",
+      s.total_amount as "totalAmount",
+      s.created_at as "createdAt",
+      s.seller_id as "sellerId",
 
-      -- payments (can be multiple; but your query picks joined rows)
-      p.id AS "paymentId",
-      p.amount AS "paymentAmount",
-      p.method AS "paymentMethod",
-      p.created_at AS "paymentCreatedAt",
-      p.cashier_id AS "cashierId",
+      pa.payment_amount as "paymentAmount",
+      pa.payment_count as "paymentCount",
+      pa.last_payment_at as "lastPaymentAt",
+      pa.last_payment_method as "paymentMethod",
 
-      -- credit (typically 1 per sale)
-      c.id AS "creditId",
-      c.status AS "creditStatus",
-      c.amount AS "creditAmount",
-      c.approved_by AS "creditApprovedBy",
-      c.approved_at AS "creditApprovedAt",
-      c.settled_by AS "creditSettledBy",
-      c.settled_at AS "creditSettledAt",
+      c.id as "creditId",
+      c.status as "creditStatus",
+      c.amount as "creditAmount",
+      c.approved_by as "creditApprovedBy",
+      c.approved_at as "creditApprovedAt",
+      c.settled_by as "creditSettledBy",
+      c.settled_at as "creditSettledAt",
 
-      -- refunds aggregate
-      ra.refund_amount AS "refundAmount",
-      ra.refund_count AS "refundCount",
-      ra.last_refund_at AS "lastRefundAt"
+      ra.refund_amount as "refundAmount",
+      ra.refund_count as "refundCount",
+      ra.last_refund_at as "lastRefundAt"
 
     FROM sales s
-    LEFT JOIN payments p
-      ON p.sale_id = s.id AND p.location_id = s.location_id
+    LEFT JOIN payments_agg pa
+      ON pa.sale_id = s.id AND pa.location_id = s.location_id
     LEFT JOIN credits c
       ON c.sale_id = s.id AND c.location_id = s.location_id
     LEFT JOIN refunds_agg ra
@@ -72,7 +77,6 @@ async function customerHistory({ locationId, customerId, limit = 50 }) {
 
   const rows = res.rows || res || [];
 
-  // Totals
   let salesCount = 0;
   let salesTotal = 0;
   let paidTotal = 0;

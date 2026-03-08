@@ -1,4 +1,3 @@
-// backend/src/services/notificationService.js
 "use strict";
 
 const { db } = require("../config/db");
@@ -8,19 +7,18 @@ const { locations } = require("../db/schema/locations.schema");
 const { and, eq, desc, lt, inArray, sql } = require("drizzle-orm");
 const { EventEmitter } = require("events");
 
-/**
- * Real-time delivery (SSE): in-memory emitters per recipient userId
- */
 const userEmitters = new Map();
 
 function getEmitter(userId) {
   const id = String(userId);
   let em = userEmitters.get(id);
+
   if (!em) {
     em = new EventEmitter();
     em.setMaxListeners(100);
     userEmitters.set(id, em);
   }
+
   return em;
 }
 
@@ -29,10 +27,6 @@ function publishToUser(userId, payload) {
   getEmitter(userId).emit("notification", payload);
 }
 
-/**
- * Helper: get active users in a location by roles.
- * IMPORTANT: accepts optional tx (so it can run inside a parent transaction)
- */
 async function getUsersByRoles({
   locationId,
   roles = [],
@@ -66,10 +60,6 @@ async function getUsersByRoles({
   return rows || [];
 }
 
-/**
- * Insert ONE notification and return the inserted row + location label.
- * IMPORTANT: accepts optional tx so it can use the same DB session as a parent transaction.
- */
 async function createNotification({
   locationId,
   recipientUserId,
@@ -90,11 +80,13 @@ async function createNotification({
     err.code = "BAD_LOCATION";
     throw err;
   }
+
   if (!Number.isInteger(recId) || recId <= 0) {
     const err = new Error("Invalid recipientUserId");
     err.code = "BAD_RECIPIENT";
     throw err;
   }
+
   if (!type || !title) {
     const err = new Error("type and title are required");
     err.code = "BAD_PAYLOAD";
@@ -121,16 +113,6 @@ async function createNotification({
     })
     .returning();
 
-  // PROOF log (remove later)
-  console.log("[NOTIF] inserted", {
-    id: row?.id,
-    locId,
-    recId,
-    type,
-    priority,
-  });
-
-  // enrich with location label for the stream consumers
   const locRows = await q
     .select({ name: locations.name, code: locations.code })
     .from(locations)
@@ -138,6 +120,7 @@ async function createNotification({
     .limit(1);
 
   const loc = locRows?.[0] || null;
+
   const payload = {
     ...row,
     location: {
@@ -155,9 +138,6 @@ async function createNotification({
   return payload;
 }
 
-/**
- * Insert notifications for multiple recipients (dedupe).
- */
 async function createNotifications({
   locationId,
   recipientUserIds = [],
@@ -177,11 +157,11 @@ async function createNotifications({
         .filter((n) => Number.isInteger(n) && n > 0),
     ),
   );
+
   if (!unique.length) return [];
 
   const out = [];
   for (const uid of unique) {
-    // eslint-disable-next-line no-await-in-loop
     const row = await createNotification({
       locationId,
       recipientUserId: uid,
@@ -196,12 +176,10 @@ async function createNotifications({
     });
     out.push(row);
   }
+
   return out;
 }
 
-/**
- * Notify all users in location that match roles.
- */
 async function notifyRoles({
   locationId,
   roles = [],
@@ -221,17 +199,9 @@ async function notifyRoles({
     tx,
   });
 
-  // PROOF log (remove later)
-  console.log("[NOTIF] notifyRoles targets", {
-    locationId: Number(locationId),
-    roles,
-    count: targets.length,
-    ids: targets.map((t) => Number(t.id)),
-  });
-
   const ids = targets.map((u) => u.id);
 
-  const rows = await createNotifications({
+  return createNotifications({
     locationId,
     recipientUserIds: ids,
     actorUserId,
@@ -243,13 +213,8 @@ async function notifyRoles({
     entityId,
     tx,
   });
-
-  console.log("[NOTIF] notifyRoles inserted count", rows.length);
-
-  return rows;
 }
 
-// ---- rest of your file unchanged (listNotifications, unreadCount, markRead, markAllRead, subscribeUser) ----
 function subscribeUser(userId, handler) {
   const em = getEmitter(userId);
   em.on("notification", handler);
@@ -264,14 +229,18 @@ async function listNotifications({
   unreadOnly = false,
 }) {
   const l = Math.max(1, Math.min(200, Number(limit) || 50));
+
   const where = [
     eq(notifications.locationId, Number(locationId)),
     eq(notifications.recipientUserId, Number(recipientUserId)),
   ];
+
   if (unreadOnly) where.push(eq(notifications.isRead, false));
 
   const cur = cursor == null ? null : Number(cursor);
-  if (Number.isInteger(cur) && cur > 0) where.push(lt(notifications.id, cur));
+  if (Number.isInteger(cur) && cur > 0) {
+    where.push(lt(notifications.id, cur));
+  }
 
   const rows = await db
     .select()
@@ -281,6 +250,7 @@ async function listNotifications({
     .limit(l);
 
   const nextCursor = rows.length === l ? rows[rows.length - 1].id : null;
+
   return { rows, nextCursor };
 }
 
@@ -292,12 +262,14 @@ async function unreadCount({ locationId, recipientUserId }) {
       AND recipient_user_id = ${Number(recipientUserId)}
       AND is_read = false
   `);
+
   const rows = res.rows || res || [];
   return Number(rows?.[0]?.c || 0);
 }
 
 async function markRead({ locationId, recipientUserId, notificationId }) {
   const id = Number(notificationId);
+
   if (!Number.isInteger(id) || id <= 0) {
     const err = new Error("Invalid notification id");
     err.code = "BAD_ID";
@@ -328,6 +300,7 @@ async function markAllRead({ locationId, recipientUserId }) {
       AND recipient_user_id = ${Number(recipientUserId)}
       AND is_read = false
   `);
+
   return { ok: true };
 }
 

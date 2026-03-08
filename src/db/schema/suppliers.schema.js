@@ -7,12 +7,9 @@ const {
   timestamp,
 } = require("drizzle-orm/pg-core");
 
-/**
- * Suppliers
- * Standalone vendor directory (not tied to daily sales).
- */
 const suppliers = pgTable("suppliers", {
   id: serial("id").primaryKey(),
+
   name: varchar("name", { length: 180 }).notNull(),
   contactName: varchar("contact_name", { length: 140 }),
   phone: varchar("phone", { length: 40 }),
@@ -20,8 +17,11 @@ const suppliers = pgTable("suppliers", {
   country: varchar("country", { length: 120 }),
   city: varchar("city", { length: 120 }),
 
-  // Where supplier comes from (LOCAL/ABROAD). Keep free-form to avoid breaking.
-  sourceType: varchar("source_type", { length: 24 }).default("LOCAL"),
+  sourceType: varchar("source_type", { length: 24 }).notNull().default("LOCAL"),
+
+  defaultCurrency: varchar("default_currency", { length: 8 })
+    .notNull()
+    .default("RWF"),
 
   address: text("address"),
   notes: text("notes"),

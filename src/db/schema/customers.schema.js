@@ -1,4 +1,3 @@
-// backend/src/db/schema/customers.schema.js
 const {
   pgTable,
   serial,
@@ -18,13 +17,10 @@ const customers = pgTable(
     name: varchar("name", { length: 120 }).notNull(),
     phone: varchar("phone", { length: 30 }).notNull(),
 
-    tin: varchar("tin", { length: 30 }),
-    address: varchar("address", { length: 200 }),
-
-    notes: text("notes"),
-
     tin: varchar("tin", { length: 60 }),
     address: text("address"),
+    notes: text("notes"),
+
     createdAt: timestamp("created_at").defaultNow(),
     updatedAt: timestamp("updated_at").defaultNow(),
   },

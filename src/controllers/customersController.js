@@ -1,4 +1,5 @@
-// backend/src/controllers/customersController.js
+"use strict";
+
 const {
   createCustomerSchema,
   searchCustomerSchema,
@@ -18,16 +19,26 @@ async function createCustomer(request, reply) {
   }
 
   const locationId = request.user?.locationId;
-  if (!locationId)
+  if (!locationId) {
     return reply.status(400).send({ error: "Missing user location" });
+  }
 
-  const customer = await customerService.createCustomer({
-    locationId,
-    actorId: request.user.id,
-    data: parsed.data,
-  });
+  try {
+    const customer = await customerService.createCustomer({
+      locationId,
+      actorId: request.user.id,
+      data: parsed.data,
+    });
 
-  return reply.send({ ok: true, customer });
+    return reply.send({ ok: true, customer });
+  } catch (e) {
+    if (e.code === "VALIDATION") {
+      return reply.status(400).send({ error: e.message });
+    }
+
+    request.log.error({ err: e }, "createCustomer failed");
+    return reply.status(500).send({ error: "Failed to create customer" });
+  }
 }
 
 async function searchCustomers(request, reply) {
@@ -45,22 +56,36 @@ async function searchCustomers(request, reply) {
     return reply.status(400).send({ error: "Missing user location" });
   }
 
-  const effectiveLocationId = isOwner
-    ? (parsed.data.locationId ?? null)
-    : request.user.locationId;
+  try {
+    const effectiveLocationId = isOwner
+      ? (parsed.data.locationId ?? null)
+      : request.user.locationId;
 
-  const customers = await customerService.searchCustomers({
-    locationId: effectiveLocationId,
-    q: parsed.data.q,
-  });
+    console.log("[CUSTOMERS][SEARCH]", {
+      role,
+      isOwner,
+      requestUser: request.user,
+      query: parsed.data,
+      effectiveLocationId,
+    });
 
-  return reply.send({ ok: true, customers });
+    const customers = await customerService.searchCustomers({
+      locationId: effectiveLocationId,
+      q: parsed.data.q,
+    });
+
+    return reply.send({ ok: true, customers });
+  } catch (e) {
+    request.log.error({ err: e }, "searchCustomers failed");
+    return reply.status(500).send({ error: "Failed to search customers" });
+  }
 }
 
 async function getCustomerHistory(request, reply) {
   const customerId = Number(request.params.id);
-  if (!customerId)
+  if (!customerId) {
     return reply.status(400).send({ error: "Invalid customer id" });
+  }
 
   const q = customerHistoryQuerySchema.safeParse(request.query);
   if (!q.success) {
@@ -76,22 +101,27 @@ async function getCustomerHistory(request, reply) {
     return reply.status(400).send({ error: "Missing user location" });
   }
 
-  const effectiveLocationId = isOwner
-    ? (q.data.locationId ?? null)
-    : request.user.locationId;
+  try {
+    const effectiveLocationId = isOwner
+      ? (q.data.locationId ?? null)
+      : request.user.locationId;
 
-  const history = await customerHistory({
-    locationId: effectiveLocationId,
-    customerId,
-    limit: q.data.limit ?? 50,
-  });
+    const history = await customerHistory({
+      locationId: effectiveLocationId,
+      customerId,
+      limit: q.data.limit ?? 50,
+    });
 
-  return reply.send({
-    ok: true,
-    customerId,
-    sales: history.rows,
-    totals: history.totals,
-  });
+    return reply.send({
+      ok: true,
+      customerId,
+      sales: history.rows,
+      totals: history.totals,
+    });
+  } catch (e) {
+    request.log.error({ err: e }, "getCustomerHistory failed");
+    return reply.status(500).send({ error: "Failed to load customer history" });
+  }
 }
 
 async function listCustomers(request, reply) {
@@ -109,16 +139,45 @@ async function listCustomers(request, reply) {
     return reply.status(400).send({ error: "Missing user location" });
   }
 
-  const effectiveLocationId = isOwner
-    ? (q.data.locationId ?? null)
-    : request.user.locationId;
+  try {
+    const effectiveLocationId = isOwner
+      ? (q.data.locationId ?? null)
+      : request.user.locationId;
 
-  const customers = await customerService.listCustomers({
-    locationId: effectiveLocationId,
-    limit: q.data.limit ?? 50,
-  });
+    console.log("[CUSTOMERS][LIST]", {
+      role,
+      isOwner,
+      requestUser: {
+        id: request.user?.id,
+        role: request.user?.role,
+        locationId: request.user?.locationId,
+        email: request.user?.email,
+      },
+      query: q.data,
+      effectiveLocationId,
+    });
 
-  return reply.send({ ok: true, customers });
+    const result = await customerService.listCustomers({
+      locationId: effectiveLocationId,
+      limit: q.data.limit ?? 50,
+      cursor: q.data.cursor ?? null,
+    });
+
+    console.log("[CUSTOMERS][LIST][RESULT]", {
+      count: Array.isArray(result?.customers) ? result.customers.length : -1,
+      nextCursor: result?.nextCursor ?? null,
+      firstRow: result?.customers?.[0] || null,
+    });
+
+    return reply.send({
+      ok: true,
+      customers: result.customers,
+      nextCursor: result.nextCursor,
+    });
+  } catch (e) {
+    request.log.error({ err: e }, "listCustomers failed");
+    return reply.status(500).send({ error: "Failed to load customers" });
+  }
 }
 
 module.exports = {

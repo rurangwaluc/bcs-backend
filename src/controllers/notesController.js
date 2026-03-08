@@ -1,4 +1,5 @@
-// backend/src/controllers/notesController.js
+"use strict";
+
 const {
   createNoteSchema,
   listNotesSchema,
@@ -35,8 +36,17 @@ async function createNote(request, reply) {
     return reply.send({ ok: true, note });
   } catch (e) {
     request.log.error({ err: e }, "createNote failed");
-    if (e.code === "BAD_MESSAGE")
+
+    if (
+      e.code === "BAD_MESSAGE" ||
+      e.code === "BAD_LOCATION" ||
+      e.code === "BAD_USER" ||
+      e.code === "BAD_ENTITY_TYPE" ||
+      e.code === "BAD_ENTITY_ID"
+    ) {
       return reply.status(400).send({ error: e.message });
+    }
+
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
@@ -60,9 +70,18 @@ async function listNotes(request, reply) {
       cursor: parsed.data.cursor,
     });
 
-    return reply.send({ ok: true, ...out });
+    return reply.send({ ok: true, rows: out.rows, nextCursor: out.nextCursor });
   } catch (e) {
     request.log.error({ err: e }, "listNotes failed");
+
+    if (
+      e.code === "BAD_LOCATION" ||
+      e.code === "BAD_ENTITY_TYPE" ||
+      e.code === "BAD_ENTITY_ID"
+    ) {
+      return reply.status(400).send({ error: e.message });
+    }
+
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }

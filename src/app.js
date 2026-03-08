@@ -6,8 +6,6 @@ const multipart = require("@fastify/multipart");
 
 const { env } = require("./config/env");
 const { sessionAuth } = require("./middleware/sessionAuth");
-
-// ✅ ADD THIS
 const { touchLastSeen } = require("./middleware/touchLastSeen");
 
 // Routes
@@ -16,6 +14,23 @@ const { authRoutes } = require("./routes/auth.routes");
 const { dashboardRoutes } = require("./routes/dashboard.routes");
 const { ownerDashboardRoutes } = require("./routes/dashboard.owner.routes");
 const { ownerRoutes } = require("./routes/owner.routes");
+const { ownerInventoryRoutes } = require("./routes/ownerInventory.routes");
+const { ownerProductsRoutes } = require("./routes/ownerProducts.routes");
+const { ownerSalesRoutes } = require("./routes/ownerSales.routes");
+const { ownerPaymentsRoutes } = require("./routes/ownerPayments.routes");
+const { ownerCreditRoutes } = require("./routes/ownerCredit.routes");
+const { ownerCashRoutes } = require("./routes/ownerCash.routes");
+const { ownerReportsRoutes } = require("./routes/ownerReports.routes");
+const { ownerSuppliersRoutes } = require("./routes/ownerSuppliers.routes");
+const {
+  ownerSupplierBillsRoutes,
+} = require("./routes/ownerSupplierBills.routes");
+const {
+  ownerSupplierBillsWriteRoutes,
+} = require("./routes/ownerSupplierBillsWrite.routes");
+const {
+  ownerSuppliersWriteRoutes,
+} = require("./routes/ownerSuppliersWrite.routes");
 
 const { usersRoutes } = require("./routes/users.routes");
 const { customersRoutes } = require("./routes/customers.routes");
@@ -58,7 +73,7 @@ const { creditReadRoutes } = require("./routes/credit.read.routes");
 const { reportsRoutes } = require("./routes/reports.routes");
 const { uploadsRoutes } = require("./routes/uploads.routes");
 
-// Suppliers (procurement)
+// Suppliers
 const { suppliersRoutes } = require("./routes/suppliers.routes");
 const { supplierBillsRoutes } = require("./routes/supplierBills.routes");
 
@@ -99,10 +114,7 @@ function buildApp() {
 
   app.register(rateLimit, { global: false });
 
-  // ✅ auth first (sets request.user)
   app.addHook("preHandler", sessionAuth);
-
-  // ✅ then lastSeen tracker (needs request.user)
   app.addHook("preHandler", touchLastSeen);
 
   app.get("/health", async () => ({
@@ -116,6 +128,18 @@ function buildApp() {
   app.register(dashboardRoutes);
   app.register(ownerDashboardRoutes);
   app.register(ownerRoutes);
+  app.register(ownerInventoryRoutes);
+  app.register(ownerProductsRoutes);
+  app.register(ownerSalesRoutes);
+  app.register(ownerPaymentsRoutes);
+  app.register(ownerCreditRoutes);
+  app.register(ownerCashRoutes);
+  app.register(ownerReportsRoutes);
+  app.register(ownerSuppliersRoutes);
+  app.register(ownerSupplierBillsRoutes);
+  app.register(ownerSupplierBillsWriteRoutes);
+  app.register(ownerSuppliersWriteRoutes);
+
   app.register(managerDashboardRoutes);
   app.register(adminDashboardRoutes);
 
@@ -149,10 +173,8 @@ function buildApp() {
   app.register(creditReadRoutes);
 
   app.register(reportsRoutes);
-
   app.register(uploadsRoutes);
 
-  // Suppliers (procurement)
   app.register(suppliersRoutes);
   app.register(supplierBillsRoutes);
 

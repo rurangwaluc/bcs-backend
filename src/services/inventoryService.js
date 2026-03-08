@@ -1,5 +1,3 @@
-// backend/src/services/inventoryService.js
-
 const { db } = require("../config/db");
 const { products } = require("../db/schema/products.schema");
 const { inventoryBalances } = require("../db/schema/inventory.schema");
@@ -12,6 +10,8 @@ const { safeLogAudit } = require("./auditService");
  */
 async function createProduct({ locationId, userId, data }) {
   return db.transaction(async (tx) => {
+    const openingQty = Number(data.openingQty ?? 0);
+
     const [created] = await tx
       .insert(products)
       .values({
@@ -41,23 +41,31 @@ async function createProduct({ locationId, userId, data }) {
       await tx.insert(inventoryBalances).values({
         locationId,
         productId: created.id,
-        qtyOnHand: 0,
+        qtyOnHand: openingQty,
         updatedAt: new Date(),
       });
     }
 
-    // ✅ Audit (non-blocking) — safeLogAudit strips unsupported fields
     await safeLogAudit({
       userId,
       action: "PRODUCT_CREATE",
       entity: "product",
       entityId: created.id,
       description: `Created product: ${created.name}`,
-      meta: { productId: created.id, name: created.name, locationId },
+      meta: {
+        productId: created.id,
+        name: created.name,
+        locationId,
+        openingQty,
+      },
       locationId,
     });
 
-    return created;
+    return {
+      ...created,
+      openingQty,
+      qtyOnHand: openingQty,
+    };
   });
 }
 
@@ -163,7 +171,6 @@ async function updateProductPricing({
  * Get inventory balances joined with product info
  */
 async function getInventoryBalances({ locationId, includeInactive = false }) {
-  // Include archived products only if includeInactive=true
   const extraWhere = includeInactive ? sql`` : sql` AND p.is_active = true`;
 
   return db.execute(sql`
@@ -390,13 +397,6 @@ async function restoreProduct({ locationId, userId, productId }) {
 
 /**
  * ⚠️ Guarded hard delete
- * Only deletes if:
- * - qtyOnHand is 0 (or balance row missing)
- * - no internal notes for entityType=product
- *
- * NOTE:
- * I cannot confirm your sales/arrivals tables and foreign keys here,
- * so this is a "minimum safe" delete for your current codebase.
  */
 async function deleteProductIfSafe({ locationId, userId, productId }) {
   return db.transaction(async (tx) => {
@@ -430,7 +430,6 @@ async function deleteProductIfSafe({ locationId, userId, productId }) {
       throw err;
     }
 
-    // Prevent deleting if there are notes attached
     const noteRows = await tx
       .select({ id: internalNotes.id })
       .from(internalNotes)
@@ -449,7 +448,6 @@ async function deleteProductIfSafe({ locationId, userId, productId }) {
       throw err;
     }
 
-    // delete balance first
     await tx
       .delete(inventoryBalances)
       .where(

@@ -1,4 +1,5 @@
-// backend/src/routes/customers.routes.js
+"use strict";
+
 const ACTIONS = require("../permissions/actions");
 const { requirePermission } = require("../middleware/requirePermission");
 const {
@@ -15,7 +16,6 @@ async function customersRoutes(app) {
     createCustomer,
   );
 
-  // ✅ REQUIRED for listing customers
   app.get(
     "/customers",
     { preHandler: [requirePermission(ACTIONS.CUSTOMER_VIEW)] },
