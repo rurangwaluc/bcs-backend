@@ -14,6 +14,14 @@ function requireUser(request, reply) {
   return true;
 }
 
+function isOwner(user) {
+  return (
+    String(user?.role || "")
+      .trim()
+      .toLowerCase() === "owner"
+  );
+}
+
 async function createNote(request, reply) {
   if (!requireUser(request, reply)) return;
 
@@ -36,7 +44,6 @@ async function createNote(request, reply) {
     return reply.send({ ok: true, note });
   } catch (e) {
     request.log.error({ err: e }, "createNote failed");
-
     if (
       e.code === "BAD_MESSAGE" ||
       e.code === "BAD_LOCATION" ||
@@ -46,7 +53,6 @@ async function createNote(request, reply) {
     ) {
       return reply.status(400).send({ error: e.message });
     }
-
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
@@ -62,8 +68,14 @@ async function listNotes(request, reply) {
   }
 
   try {
+    const owner = isOwner(request.user);
+
+    const effectiveLocationId = owner
+      ? (parsed.data.locationId ?? null)
+      : request.user.locationId;
+
     const out = await notesService.listNotes({
-      locationId: request.user.locationId,
+      locationId: effectiveLocationId,
       entityType: parsed.data.entityType,
       entityId: parsed.data.entityId,
       limit: parsed.data.limit,
@@ -73,15 +85,6 @@ async function listNotes(request, reply) {
     return reply.send({ ok: true, rows: out.rows, nextCursor: out.nextCursor });
   } catch (e) {
     request.log.error({ err: e }, "listNotes failed");
-
-    if (
-      e.code === "BAD_LOCATION" ||
-      e.code === "BAD_ENTITY_TYPE" ||
-      e.code === "BAD_ENTITY_ID"
-    ) {
-      return reply.status(400).send({ error: e.message });
-    }
-
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }

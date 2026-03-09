@@ -1,4 +1,5 @@
-// backend/src/validators/notes.schema.js
+"use strict";
+
 const { z } = require("zod");
 
 const entityTypeEnum = z.enum(["sale", "credit", "customer"]);
@@ -10,8 +11,9 @@ const createNoteSchema = z.object({
 });
 
 const listNotesSchema = z.object({
-  entityType: entityTypeEnum,
-  entityId: z.coerce.number().int().positive(),
+  locationId: z.coerce.number().int().positive().optional(),
+  entityType: entityTypeEnum.optional(),
+  entityId: z.coerce.number().int().positive().optional(),
   limit: z.coerce.number().int().min(1).max(200).optional().default(50),
   cursor: z.coerce.number().int().positive().optional(),
 });

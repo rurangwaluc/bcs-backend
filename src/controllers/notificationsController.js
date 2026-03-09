@@ -5,12 +5,21 @@ const notificationService = require("../services/notificationService");
 function toInt(v, def = null) {
   if (v === undefined || v === null || v === "") return def;
   const n = Number(v);
-  return Number.isFinite(n) ? Math.round(n) : def;
+  return Number.isFinite(n) ? Math.trunc(n) : def;
+}
+
+function isOwner(user) {
+  return (
+    String(user?.role || "")
+      .trim()
+      .toLowerCase() === "owner"
+  );
 }
 
 async function listNotifications(request, reply) {
-  const locationId = request.user?.locationId;
-  const userId = request.user?.id;
+  const user = request.user;
+  const userLocationId = user?.locationId;
+  const userId = user?.id;
 
   const limit = toInt(request.query?.limit, 50);
   const cursor =
@@ -21,15 +30,34 @@ async function listNotifications(request, reply) {
   const unreadOnly =
     String(request.query?.unreadOnly || "").toLowerCase() === "true";
 
+  const requestedScope = String(request.query?.scope || "inbox")
+    .trim()
+    .toLowerCase();
+
+  const requestedLocationId = toInt(request.query?.locationId, null);
+
+  const owner = isOwner(user);
+
+  const scope = owner && requestedScope === "company" ? "company" : "inbox";
+
+  const effectiveLocationId =
+    scope === "company" ? requestedLocationId : userLocationId;
+
   const data = await notificationService.listNotifications({
-    locationId,
+    actorUser: user,
+    locationId: effectiveLocationId,
     recipientUserId: userId,
     limit,
     cursor,
     unreadOnly,
+    scope,
   });
 
-  return reply.send({ ok: true, rows: data.rows, nextCursor: data.nextCursor });
+  return reply.send({
+    ok: true,
+    rows: data.rows,
+    nextCursor: data.nextCursor,
+  });
 }
 
 async function unreadCount(request, reply) {

@@ -166,7 +166,7 @@ function buildApp() {
   app.register(cashRoutes);
   app.register(cashSessionsRoutes, { prefix: "/cash-sessions" });
   app.register(cashbookRoutes, { prefix: "/cashbook" });
-  app.register(expensesRoutes, { prefix: "/cash/expenses" });
+  app.register(expensesRoutes);
   app.register(cashReconcileRoutes, { prefix: "/" });
 
   app.register(creditRoutes);

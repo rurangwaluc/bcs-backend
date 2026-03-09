@@ -1,4 +1,4 @@
-// backend/src/services/refundsService.js
+"use strict";
 
 const { db } = require("../config/db");
 const notificationService = require("./notificationService");
@@ -12,8 +12,21 @@ const { cashLedger } = require("../db/schema/cash_ledger.schema");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
 const { eq, and, sql } = require("drizzle-orm");
 
+function clampInt(n, min, max, fallback) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return fallback;
+  return Math.min(Math.max(Math.trunc(x), min), max);
+}
+
+function toInt(v, fallback = null) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
 function cleanMethod(m) {
-  const v = String(m || "CASH").toUpperCase();
+  const v = String(m || "CASH")
+    .trim()
+    .toUpperCase();
   const allowed = new Set(["CASH", "MOMO", "CARD", "BANK", "OTHER"]);
   return allowed.has(v) ? v : "CASH";
 }
@@ -35,6 +48,7 @@ async function findOpenCashSessionId(tx, { locationId, cashierId }) {
     ORDER BY opened_at DESC
     LIMIT 1
   `);
+
   const rows = r.rows || r;
   return rows?.[0]?.id ?? null;
 }
@@ -46,9 +60,9 @@ function computeLineAmount(si, qty) {
 
   const calc = unitPrice * q;
 
-  // Safety clamp: never refund more than the original line total
-  if (Number.isFinite(lineTotal) && lineTotal > 0)
+  if (Number.isFinite(lineTotal) && lineTotal > 0) {
     return Math.min(calc, lineTotal);
+  }
 
   return calc;
 }
@@ -63,7 +77,6 @@ async function createRefund({
   items,
 }) {
   return db.transaction(async (tx) => {
-    // 1) Load sale
     const [sale] = await tx
       .select()
       .from(sales)
@@ -75,7 +88,6 @@ async function createRefund({
       throw err;
     }
 
-    // Allow refunds only for COMPLETED or PARTIALLY_REFUNDED
     const st = String(sale.status || "");
     if (!["COMPLETED", "PARTIALLY_REFUNDED"].includes(st)) {
       const err = new Error("Sale not refundable");
@@ -84,7 +96,6 @@ async function createRefund({
       throw err;
     }
 
-    // 2) Link to payment (must exist)
     const payRows = await tx
       .select()
       .from(payments)
@@ -104,13 +115,13 @@ async function createRefund({
     const cleanReason = cleanText(reason, 300);
     const cleanRef = cleanText(reference, 120);
 
-    // 3) Resolve CASH session
     let cashSessionId = null;
     if (m === "CASH") {
       cashSessionId = await findOpenCashSessionId(tx, {
         locationId,
         cashierId: userId,
       });
+
       if (!cashSessionId) {
         const err = new Error("No open cash session");
         err.code = "NO_OPEN_SESSION";
@@ -118,11 +129,11 @@ async function createRefund({
       }
     }
 
-    // 4) Load sale items
     const saleItemRows = await tx
       .select()
       .from(saleItems)
       .where(eq(saleItems.saleId, saleId));
+
     if (!saleItemRows.length) {
       const err = new Error("Sale has no items");
       err.code = "BAD_STATUS";
@@ -130,19 +141,20 @@ async function createRefund({
       throw err;
     }
 
-    // Build refund plan:
-    // - if items missing => full refund (all qty)
     const plan = [];
     if (!items || items.length === 0) {
       for (const si of saleItemRows) {
         plan.push({ saleItemId: Number(si.id), qty: Number(si.qty) });
       }
     } else {
-      for (const it of items)
-        plan.push({ saleItemId: Number(it.saleItemId), qty: Number(it.qty) });
+      for (const it of items) {
+        plan.push({
+          saleItemId: Number(it.saleItemId),
+          qty: Number(it.qty),
+        });
+      }
     }
 
-    // Map sale items for quick lookup
     const map = new Map(saleItemRows.map((si) => [Number(si.id), si]));
     for (const p of plan) {
       if (!map.has(p.saleItemId)) {
@@ -153,7 +165,6 @@ async function createRefund({
       }
     }
 
-    // 5) Create refund header first (total_amount will be recalculated by DB trigger after we insert items)
     const [refund] = await tx
       .insert(refunds)
       .values({
@@ -169,18 +180,16 @@ async function createRefund({
       })
       .returning();
 
-    // 6) Insert refund items + restore inventory for each
     let computedTotal = 0;
 
     for (const p of plan) {
       const si = map.get(p.saleItemId);
       const qty = Math.max(1, Math.round(p.qty));
       const productId = Number(si.productId);
-
       const lineAmount = computeLineAmount(si, qty);
+
       computedTotal += lineAmount;
 
-      // Insert refund item (DB trigger blocks over-refund qty)
       await tx.insert(refundItems).values({
         refundId: Number(refund.id),
         saleItemId: Number(si.id),
@@ -189,7 +198,6 @@ async function createRefund({
         amount: lineAmount,
       });
 
-      // Restore inventory
       await tx
         .insert(inventoryBalances)
         .values({ locationId, productId, qtyOnHand: 0 })
@@ -204,7 +212,6 @@ async function createRefund({
       `);
     }
 
-    // 7) Ledger OUT for total
     await tx.insert(cashLedger).values({
       locationId,
       cashierId: userId,
@@ -219,8 +226,6 @@ async function createRefund({
       note: cleanReason ? `Refund: ${cleanReason}` : "Refund issued",
     });
 
-    // 8) Update sale status (PARTIALLY_REFUNDED or REFUNDED)
-    // Determine if all quantities are refunded for this sale:
     const remain = await tx.execute(sql`
       SELECT
         SUM(si.qty)::int as sold_qty,
@@ -234,6 +239,7 @@ async function createRefund({
       sold_qty: 0,
       refunded_qty: 0,
     };
+
     const soldQty = Number(r0.sold_qty || 0);
     const refundedQty = Number(r0.refunded_qty || 0);
 
@@ -246,18 +252,20 @@ async function createRefund({
       .where(eq(sales.id, saleId))
       .returning();
 
-    // 9) Audit
     await tx.insert(auditLogs).values({
       locationId,
       userId,
       action: "REFUND_CREATE",
-      entity: "sale",
-      entityId: saleId,
-      description: `Refund created sale #${saleId}, total=${computedTotal}, method=${m}, refundId=${refund.id}`,
-      meta: null,
+      entity: "refund",
+      entityId: Number(refund.id),
+      description: `Refund created for sale #${saleId}, total=${computedTotal}, method=${m}`,
+      meta: {
+        saleId,
+        refundId: Number(refund.id),
+        method: m,
+      },
     });
 
-    // 🔔 Refund created -> manager/admin (warn)
     await notificationService.notifyRoles({
       locationId,
       roles: ["manager", "admin"],
@@ -289,37 +297,227 @@ async function createRefund({
   });
 }
 
-async function listRefunds({ locationId }) {
+async function listRefunds({
+  locationId = null,
+  limit = 50,
+  cursor = null,
+  saleId = null,
+  method = null,
+  q = null,
+  from = null,
+  toExclusive = null,
+}) {
+  const lim = clampInt(limit, 1, 200, 50);
+  const cursorId = toInt(cursor, null);
+  const saleIdInt = toInt(saleId, null);
+  const methodValue = method ? cleanMethod(method) : null;
+  const qValue = cleanText(q, 200);
+
+  let where = sql`TRUE`;
+
+  if (locationId != null) {
+    where = sql`${where} AND r.location_id = ${Number(locationId)}`;
+  }
+
+  if (cursorId != null && cursorId > 0) {
+    where = sql`${where} AND r.id < ${cursorId}`;
+  }
+
+  if (saleIdInt != null && saleIdInt > 0) {
+    where = sql`${where} AND r.sale_id = ${saleIdInt}`;
+  }
+
+  if (methodValue) {
+    where = sql`${where} AND r.method = ${methodValue}`;
+  }
+
+  if (from) {
+    where = sql`${where} AND r.created_at >= ${from}`;
+  }
+
+  if (toExclusive) {
+    where = sql`${where} AND r.created_at < ${toExclusive}`;
+  }
+
+  if (qValue) {
+    const like = `%${qValue}%`;
+    where = sql`${where} AND (
+      CAST(r.id AS text) ILIKE ${like}
+      OR CAST(r.sale_id AS text) ILIKE ${like}
+      OR COALESCE(r.reason, '') ILIKE ${like}
+      OR COALESCE(r.reference, '') ILIKE ${like}
+      OR COALESCE(r.method, '') ILIKE ${like}
+      OR COALESCE(l.name, '') ILIKE ${like}
+      OR COALESCE(l.code, '') ILIKE ${like}
+      OR COALESCE(u.name, '') ILIKE ${like}
+      OR COALESCE(u.email, '') ILIKE ${like}
+    )`;
+  }
+
   const result = await db.execute(sql`
     SELECT
       r.id,
+      r.location_id as "locationId",
+      l.name as "locationName",
+      l.code as "locationCode",
+
       r.sale_id as "saleId",
+      s.status as "saleStatus",
+      s.total_amount as "saleTotalAmount",
+
       r.total_amount as "totalAmount",
       r.method,
       r.reference,
       r.payment_id as "paymentId",
       r.cash_session_id as "cashSessionId",
       r.reason,
+
       r.created_by_user_id as "createdByUserId",
-      r.created_at as "createdAt"
+      u.name as "createdByName",
+      u.email as "createdByEmail",
+
+      r.created_at as "createdAt",
+
+      COALESCE((
+        SELECT COUNT(*)::int
+        FROM refund_items ri
+        WHERE ri.refund_id = r.id
+      ), 0) as "itemsCount"
     FROM refunds r
-    WHERE r.location_id = ${locationId}
+    JOIN locations l
+      ON l.id = r.location_id
+    LEFT JOIN users u
+      ON u.id = r.created_by_user_id
+    LEFT JOIN sales s
+      ON s.id = r.sale_id
+     AND s.location_id = r.location_id
+    WHERE ${where}
     ORDER BY r.id DESC
-    LIMIT 200
+    LIMIT ${lim}
   `);
-  const rows = result.rows || result || [];
-  return rows.map((r) => ({
+
+  const rows = (result.rows || result || []).map((r) => ({
     id: Number(r.id),
+    locationId: Number(r.locationId),
+    locationName: r.locationName ?? null,
+    locationCode: r.locationCode ?? null,
     saleId: Number(r.saleId),
+    saleStatus: r.saleStatus ?? null,
+    saleTotalAmount: Number(r.saleTotalAmount || 0),
     totalAmount: Number(r.totalAmount || 0),
     method: String(r.method || "CASH"),
     reference: r.reference ?? null,
     paymentId: r.paymentId == null ? null : Number(r.paymentId),
     cashSessionId: r.cashSessionId == null ? null : Number(r.cashSessionId),
     reason: r.reason ?? null,
-    createdByUserId: Number(r.createdByUserId),
+    createdByUserId:
+      r.createdByUserId == null ? null : Number(r.createdByUserId),
+    createdByName: r.createdByName ?? null,
+    createdByEmail: r.createdByEmail ?? null,
     createdAt: r.createdAt,
+    itemsCount: Number(r.itemsCount || 0),
   }));
+
+  const nextCursor = rows.length === lim ? rows[rows.length - 1].id : null;
+
+  return { rows, nextCursor };
 }
 
-module.exports = { createRefund, listRefunds };
+async function getRefundById({ refundId, locationId = null }) {
+  const id = toInt(refundId, null);
+  if (!id) return null;
+
+  let where = sql`r.id = ${id}`;
+  if (locationId != null) {
+    where = sql`${where} AND r.location_id = ${Number(locationId)}`;
+  }
+
+  const headRes = await db.execute(sql`
+    SELECT
+      r.id,
+      r.location_id as "locationId",
+      l.name as "locationName",
+      l.code as "locationCode",
+
+      r.sale_id as "saleId",
+      s.status as "saleStatus",
+      s.total_amount as "saleTotalAmount",
+
+      r.total_amount as "totalAmount",
+      r.method,
+      r.reference,
+      r.payment_id as "paymentId",
+      r.cash_session_id as "cashSessionId",
+      r.reason,
+
+      r.created_by_user_id as "createdByUserId",
+      u.name as "createdByName",
+      u.email as "createdByEmail",
+
+      r.created_at as "createdAt"
+    FROM refunds r
+    JOIN locations l
+      ON l.id = r.location_id
+    LEFT JOIN users u
+      ON u.id = r.created_by_user_id
+    LEFT JOIN sales s
+      ON s.id = r.sale_id
+     AND s.location_id = r.location_id
+    WHERE ${where}
+    LIMIT 1
+  `);
+
+  const refund = (headRes.rows || headRes || [])[0];
+  if (!refund) return null;
+
+  const itemsRes = await db.execute(sql`
+    SELECT
+      ri.id,
+      ri.refund_id as "refundId",
+      ri.sale_item_id as "saleItemId",
+      ri.product_id as "productId",
+      ri.qty,
+      ri.amount
+    FROM refund_items ri
+    WHERE ri.refund_id = ${id}
+    ORDER BY ri.id ASC
+  `);
+
+  return {
+    refund: {
+      id: Number(refund.id),
+      locationId: Number(refund.locationId),
+      locationName: refund.locationName ?? null,
+      locationCode: refund.locationCode ?? null,
+      saleId: Number(refund.saleId),
+      saleStatus: refund.saleStatus ?? null,
+      saleTotalAmount: Number(refund.saleTotalAmount || 0),
+      totalAmount: Number(refund.totalAmount || 0),
+      method: String(refund.method || "CASH"),
+      reference: refund.reference ?? null,
+      paymentId: refund.paymentId == null ? null : Number(refund.paymentId),
+      cashSessionId:
+        refund.cashSessionId == null ? null : Number(refund.cashSessionId),
+      reason: refund.reason ?? null,
+      createdByUserId:
+        refund.createdByUserId == null ? null : Number(refund.createdByUserId),
+      createdByName: refund.createdByName ?? null,
+      createdByEmail: refund.createdByEmail ?? null,
+      createdAt: refund.createdAt,
+    },
+    items: (itemsRes.rows || itemsRes || []).map((row) => ({
+      id: Number(row.id),
+      refundId: Number(row.refundId),
+      saleItemId: Number(row.saleItemId),
+      productId: Number(row.productId),
+      qty: Number(row.qty || 0),
+      amount: Number(row.amount || 0),
+    })),
+  };
+}
+
+module.exports = {
+  createRefund,
+  listRefunds,
+  getRefundById,
+};

@@ -1,3 +1,5 @@
+"use strict";
+
 const ACTIONS = require("../permissions/actions");
 const { requirePermission } = require("../middleware/requirePermission");
 const {
@@ -7,13 +9,13 @@ const {
 
 async function expensesRoutes(app) {
   app.get(
-    "/",
+    "/expenses",
     { preHandler: [requirePermission(ACTIONS.EXPENSE_VIEW)] },
     listExpenses,
   );
 
   app.post(
-    "/",
+    "/expenses",
     { preHandler: [requirePermission(ACTIONS.EXPENSE_CREATE)] },
     createExpense,
   );

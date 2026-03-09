@@ -1,4 +1,4 @@
-// backend/src/routes/notifications.routes.js
+"use strict";
 
 const ACTIONS = require("../permissions/actions");
 const { requirePermission } = require("../middleware/requirePermission");

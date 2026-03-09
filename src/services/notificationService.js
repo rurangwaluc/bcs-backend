@@ -4,10 +4,24 @@ const { db } = require("../config/db");
 const { notifications } = require("../db/schema/notifications.schema");
 const { users } = require("../db/schema/users.schema");
 const { locations } = require("../db/schema/locations.schema");
-const { and, eq, desc, lt, inArray, sql } = require("drizzle-orm");
+const { and, eq, desc, lt, inArray, sql, isNull } = require("drizzle-orm");
 const { EventEmitter } = require("events");
 
 const userEmitters = new Map();
+
+function toInt(v, fallback = null) {
+  if (v === undefined || v === null || v === "") return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+function isOwner(user) {
+  return (
+    String(user?.role || "")
+      .trim()
+      .toLowerCase() === "owner"
+  );
+}
 
 function getEmitter(userId) {
   const id = String(userId);
@@ -33,15 +47,22 @@ async function getUsersByRoles({
   onlyActive = true,
   tx = null,
 }) {
+  const locId = toInt(locationId, null);
+  if (!locId) return [];
+
   const roleList = (roles || [])
-    .map((r) => String(r || "").toLowerCase())
+    .map((r) =>
+      String(r || "")
+        .toLowerCase()
+        .trim(),
+    )
     .filter(Boolean);
 
   if (!roleList.length) return [];
 
   const q = tx || db;
 
-  const where = [eq(users.locationId, Number(locationId))];
+  const where = [eq(users.locationId, locId)];
   if (onlyActive) where.push(eq(users.isActive, true));
   where.push(inArray(users.role, roleList));
 
@@ -72,16 +93,18 @@ async function createNotification({
   entityId = null,
   tx = null,
 }) {
-  const locId = Number(locationId);
-  const recId = Number(recipientUserId);
+  const locId = toInt(locationId, null);
+  const recId = toInt(recipientUserId, null);
+  const actId = toInt(actorUserId, null);
+  const entId = toInt(entityId, null);
 
-  if (!Number.isInteger(locId) || locId <= 0) {
+  if (!locId) {
     const err = new Error("Invalid locationId");
     err.code = "BAD_LOCATION";
     throw err;
   }
 
-  if (!Number.isInteger(recId) || recId <= 0) {
+  if (!recId) {
     const err = new Error("Invalid recipientUserId");
     err.code = "BAD_RECIPIENT";
     throw err;
@@ -100,13 +123,15 @@ async function createNotification({
     .values({
       locationId: locId,
       recipientUserId: recId,
-      actorUserId: actorUserId == null ? null : Number(actorUserId),
-      type: String(type),
-      title: String(title),
+      actorUserId: actId,
+      type: String(type).trim(),
+      title: String(title).trim(),
       body: body == null ? null : String(body),
-      priority: String(priority || "normal"),
-      entity: entity == null ? null : String(entity),
-      entityId: entityId == null ? null : Number(entityId),
+      priority: String(priority || "normal")
+        .trim()
+        .toLowerCase(),
+      entity: entity == null ? null : String(entity).trim(),
+      entityId: entId,
       isRead: false,
       readAt: null,
       createdAt: new Date(),
@@ -114,7 +139,11 @@ async function createNotification({
     .returning();
 
   const locRows = await q
-    .select({ name: locations.name, code: locations.code })
+    .select({
+      id: locations.id,
+      name: locations.name,
+      code: locations.code,
+    })
     .from(locations)
     .where(eq(locations.id, locId))
     .limit(1);
@@ -123,15 +152,14 @@ async function createNotification({
 
   const payload = {
     ...row,
-    location: {
-      id: String(locId),
-      name: loc?.name ?? null,
-      code: loc?.code ?? null,
-    },
+    recipientUserEmail: null,
+    actorUserEmail: null,
+    locationName: loc?.name || null,
+    locationCode: loc?.code || null,
     locationLabel:
       loc?.name && loc?.code
         ? `${loc.name} (${loc.code})`
-        : loc?.name || "Store",
+        : loc?.name || `Branch #${locId}`,
   };
 
   publishToUser(recId, payload);
@@ -153,7 +181,7 @@ async function createNotifications({
   const unique = Array.from(
     new Set(
       (recipientUserIds || [])
-        .map((x) => Number(x))
+        .map((x) => toInt(x, null))
         .filter((n) => Number.isInteger(n) && n > 0),
     ),
   );
@@ -162,6 +190,7 @@ async function createNotifications({
 
   const out = [];
   for (const uid of unique) {
+    // eslint-disable-next-line no-await-in-loop
     const row = await createNotification({
       locationId,
       recipientUserId: uid,
@@ -221,45 +250,106 @@ function subscribeUser(userId, handler) {
   return () => em.off("notification", handler);
 }
 
+/**
+ * Modes:
+ * - inbox   => current user only (staff-safe default)
+ * - company => owner-wide feed, optionally filtered by locationId
+ */
 async function listNotifications({
+  actorUser,
   locationId,
   recipientUserId,
   limit = 50,
   cursor = null,
   unreadOnly = false,
+  scope = "inbox",
 }) {
-  const l = Math.max(1, Math.min(200, Number(limit) || 50));
+  const lim = Math.max(1, Math.min(200, Number(limit) || 50));
+  const cursorId = toInt(cursor, null);
+  const locId = toInt(locationId, null);
+  const recId = toInt(recipientUserId, null);
 
-  const where = [
-    eq(notifications.locationId, Number(locationId)),
-    eq(notifications.recipientUserId, Number(recipientUserId)),
-  ];
+  const owner = isOwner(actorUser);
+  const normalizedScope =
+    owner && String(scope || "").toLowerCase() === "company"
+      ? "company"
+      : "inbox";
 
-  if (unreadOnly) where.push(eq(notifications.isRead, false));
+  const where = [];
 
-  const cur = cursor == null ? null : Number(cursor);
-  if (Number.isInteger(cur) && cur > 0) {
-    where.push(lt(notifications.id, cur));
+  if (normalizedScope === "company") {
+    if (locId) {
+      where.push(eq(notifications.locationId, locId));
+    }
+  } else {
+    if (!locId || !recId) {
+      return { rows: [], nextCursor: null };
+    }
+
+    where.push(eq(notifications.locationId, locId));
+    where.push(eq(notifications.recipientUserId, recId));
+  }
+
+  if (unreadOnly) {
+    where.push(eq(notifications.isRead, false));
+  }
+
+  if (cursorId) {
+    where.push(lt(notifications.id, cursorId));
   }
 
   const rows = await db
-    .select()
+    .select({
+      id: notifications.id,
+      locationId: notifications.locationId,
+      recipientUserId: notifications.recipientUserId,
+      actorUserId: notifications.actorUserId,
+      type: notifications.type,
+      title: notifications.title,
+      body: notifications.body,
+      priority: notifications.priority,
+      entity: notifications.entity,
+      entityId: notifications.entityId,
+      isRead: notifications.isRead,
+      readAt: notifications.readAt,
+      createdAt: notifications.createdAt,
+      recipientUserEmail: users.email,
+      locationName: locations.name,
+      locationCode: locations.code,
+    })
     .from(notifications)
-    .where(and(...where))
+    .leftJoin(users, eq(notifications.recipientUserId, users.id))
+    .leftJoin(locations, eq(notifications.locationId, locations.id))
+    .where(where.length ? and(...where) : undefined)
     .orderBy(desc(notifications.id))
-    .limit(l);
+    .limit(lim);
 
-  const nextCursor = rows.length === l ? rows[rows.length - 1].id : null;
+  const mapped = (rows || []).map((row) => ({
+    ...row,
+    locationLabel:
+      row?.locationName && row?.locationCode
+        ? `${row.locationName} (${row.locationCode})`
+        : row?.locationName ||
+          (row?.locationId ? `Branch #${row.locationId}` : "-"),
+  }));
 
-  return { rows, nextCursor };
+  const nextCursor =
+    mapped.length === lim ? mapped[mapped.length - 1].id : null;
+
+  return { rows: mapped, nextCursor };
 }
 
 async function unreadCount({ locationId, recipientUserId }) {
+  const locId = toInt(locationId, null);
+  const recId = toInt(recipientUserId, null);
+
+  if (!locId || !recId) return 0;
+
   const res = await db.execute(sql`
     SELECT COUNT(*)::int as c
     FROM notifications
-    WHERE location_id = ${Number(locationId)}
-      AND recipient_user_id = ${Number(recipientUserId)}
+    WHERE location_id = ${locId}
+      AND recipient_user_id = ${recId}
       AND is_read = false
   `);
 
@@ -268,9 +358,11 @@ async function unreadCount({ locationId, recipientUserId }) {
 }
 
 async function markRead({ locationId, recipientUserId, notificationId }) {
-  const id = Number(notificationId);
+  const id = toInt(notificationId, null);
+  const locId = toInt(locationId, null);
+  const recId = toInt(recipientUserId, null);
 
-  if (!Number.isInteger(id) || id <= 0) {
+  if (!id) {
     const err = new Error("Invalid notification id");
     err.code = "BAD_ID";
     throw err;
@@ -282,8 +374,8 @@ async function markRead({ locationId, recipientUserId, notificationId }) {
     .where(
       and(
         eq(notifications.id, id),
-        eq(notifications.locationId, Number(locationId)),
-        eq(notifications.recipientUserId, Number(recipientUserId)),
+        eq(notifications.locationId, locId),
+        eq(notifications.recipientUserId, recId),
       ),
     )
     .returning();
@@ -292,12 +384,17 @@ async function markRead({ locationId, recipientUserId, notificationId }) {
 }
 
 async function markAllRead({ locationId, recipientUserId }) {
+  const locId = toInt(locationId, null);
+  const recId = toInt(recipientUserId, null);
+
+  if (!locId || !recId) return { ok: true };
+
   await db.execute(sql`
     UPDATE notifications
     SET is_read = true,
         read_at = now()
-    WHERE location_id = ${Number(locationId)}
-      AND recipient_user_id = ${Number(recipientUserId)}
+    WHERE location_id = ${locId}
+      AND recipient_user_id = ${recId}
       AND is_read = false
   `);
 

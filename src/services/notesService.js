@@ -2,7 +2,9 @@
 
 const { db } = require("../config/db");
 const { notes } = require("../db/schema/notes.schema");
-const { and, eq, lt, desc } = require("drizzle-orm");
+const { users } = require("../db/schema/users.schema");
+const { locations } = require("../db/schema/locations.schema");
+const { and, eq, lt, desc, sql } = require("drizzle-orm");
 const { safeLogAudit } = require("./auditService");
 const AUDIT = require("../audit/actions");
 
@@ -29,6 +31,9 @@ async function createNote({
   const actorId = toInt(userId, null);
   const targetId = toInt(entityId, null);
   const clean = toNoteMessage(message);
+  const type = String(entityType || "")
+    .trim()
+    .toLowerCase();
 
   if (!locId) {
     const err = new Error("locationId is required");
@@ -42,7 +47,7 @@ async function createNote({
     throw err;
   }
 
-  if (!entityType) {
+  if (!type) {
     const err = new Error("entityType is required");
     err.code = "BAD_ENTITY_TYPE";
     throw err;
@@ -67,7 +72,7 @@ async function createNote({
     .values({
       locationId: locId,
       userId: actorId,
-      entity: String(entityType).trim().toLowerCase(),
+      entity: type,
       entityId: targetId,
       body: clean,
       isPinned: false,
@@ -82,9 +87,9 @@ async function createNote({
     action: AUDIT.INTERNAL_NOTE_CREATED || "INTERNAL_NOTE_CREATED",
     entity: "note",
     entityId: Number(created.id),
-    description: `Note added to ${entityType}#${targetId}`,
+    description: `Note added to ${type}#${targetId}`,
     meta: {
-      entityType: String(entityType).trim().toLowerCase(),
+      entityType: type,
       entityId: targetId,
     },
   });
@@ -92,6 +97,11 @@ async function createNote({
   return created;
 }
 
+/**
+ * Supports:
+ * - entity-specific notes (existing behavior)
+ * - recent feed notes for owner/staff tab
+ */
 async function listNotes({
   locationId,
   entityType,
@@ -103,43 +113,64 @@ async function listNotes({
   const targetId = toInt(entityId, null);
   const lim = Math.min(200, Math.max(1, Number(limit || 50)));
   const cursorId = toInt(cursor, null);
+  const cleanEntityType = entityType
+    ? String(entityType).trim().toLowerCase()
+    : null;
 
-  if (!locId) {
-    const err = new Error("locationId is required");
-    err.code = "BAD_LOCATION";
-    throw err;
+  const where = [];
+
+  if (locId) {
+    where.push(eq(notes.locationId, locId));
   }
 
-  if (!entityType) {
-    const err = new Error("entityType is required");
-    err.code = "BAD_ENTITY_TYPE";
-    throw err;
+  if (cleanEntityType) {
+    where.push(eq(notes.entity, cleanEntityType));
   }
 
-  if (!targetId) {
-    const err = new Error("entityId is required");
-    err.code = "BAD_ENTITY_ID";
-    throw err;
+  if (targetId) {
+    where.push(eq(notes.entityId, targetId));
   }
 
-  const baseWhere = and(
-    eq(notes.locationId, locId),
-    eq(notes.entity, String(entityType).trim().toLowerCase()),
-    eq(notes.entityId, targetId),
-  );
-
-  const where = cursorId ? and(baseWhere, lt(notes.id, cursorId)) : baseWhere;
+  if (cursorId) {
+    where.push(lt(notes.id, cursorId));
+  }
 
   const rows = await db
-    .select()
+    .select({
+      id: notes.id,
+      locationId: notes.locationId,
+      userId: notes.userId,
+      entity: notes.entity,
+      entityId: notes.entityId,
+      body: notes.body,
+      isPinned: notes.isPinned,
+      createdAt: notes.createdAt,
+      updatedAt: notes.updatedAt,
+      userName: users.name,
+      userEmail: users.email,
+      locationName: locations.name,
+      locationCode: locations.code,
+    })
     .from(notes)
-    .where(where)
-    .orderBy(desc(notes.id))
+    .leftJoin(users, eq(notes.userId, users.id))
+    .leftJoin(locations, eq(notes.locationId, locations.id))
+    .where(where.length ? and(...where) : undefined)
+    .orderBy(desc(notes.isPinned), desc(notes.id))
     .limit(lim);
 
-  const nextCursor = rows.length === lim ? rows[rows.length - 1].id : null;
+  const mapped = (rows || []).map((row) => ({
+    ...row,
+    locationLabel:
+      row?.locationName && row?.locationCode
+        ? `${row.locationName} (${row.locationCode})`
+        : row?.locationName ||
+          (row?.locationId ? `Branch #${row.locationId}` : "-"),
+  }));
 
-  return { rows, nextCursor };
+  const nextCursor =
+    mapped.length === lim ? mapped[mapped.length - 1].id : null;
+
+  return { rows: mapped, nextCursor };
 }
 
 module.exports = { createNote, listNotes };
