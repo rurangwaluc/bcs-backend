@@ -32,6 +32,12 @@ const {
   ownerSuppliersWriteRoutes,
 } = require("./routes/ownerSuppliersWrite.routes");
 
+const { goodsReceiptsRoutes } = require("./routes/goodsReceipts.routes");
+const { purchaseOrdersRoutes } = require("./routes/purchaseOrders.routes");
+
+const { proformasRoutes } = require("./routes/proformas.routes");
+const { deliveryNotesRoutes } = require("./routes/deliveryNotes.routes");
+
 const { usersRoutes } = require("./routes/users.routes");
 const { customersRoutes } = require("./routes/customers.routes");
 const { notesRoutes } = require("./routes/notes.routes");
@@ -139,6 +145,12 @@ function buildApp() {
   app.register(ownerSupplierBillsRoutes);
   app.register(ownerSupplierBillsWriteRoutes);
   app.register(ownerSuppliersWriteRoutes);
+
+  app.register(goodsReceiptsRoutes);
+  app.register(purchaseOrdersRoutes);
+
+  app.register(proformasRoutes);
+  app.register(deliveryNotesRoutes);
 
   app.register(managerDashboardRoutes);
   app.register(adminDashboardRoutes);

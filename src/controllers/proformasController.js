@@ -1,10 +1,11 @@
 "use strict";
 
 const {
-  createInventoryArrivalSchema,
-  listInventoryArrivalsQuerySchema,
-} = require("../validators/inventory.arrivals.schema");
-const inventoryArrivalsService = require("../services/inventoryArrivalsService");
+  createProformaSchema,
+  listProformasQuerySchema,
+} = require("../validators/proformas.schema");
+
+const proformasService = require("../services/proformasService");
 
 function normalizeRole(role) {
   return String(role || "")
@@ -28,8 +29,8 @@ function parseIsoDateEndExclusive(value) {
   return d;
 }
 
-async function createInventoryArrival(request, reply) {
-  const parsed = createInventoryArrivalSchema.safeParse(request.body || {});
+async function createProforma(request, reply) {
+  const parsed = createProformaSchema.safeParse(request.body || {});
   if (!parsed.success) {
     return reply.status(400).send({
       error: "Invalid payload",
@@ -43,56 +44,29 @@ async function createInventoryArrival(request, reply) {
     : request.user.locationId;
 
   try {
-    const out = await inventoryArrivalsService.createInventoryArrival({
+    const out = await proformasService.createProforma({
       actorUser: request.user,
       locationId: effectiveLocationId,
-      supplierId: parsed.data.supplierId,
-      reference: parsed.data.reference,
-      documentNo: parsed.data.documentNo,
-      sourceType: parsed.data.sourceType,
-      sourceId: parsed.data.sourceId,
-      notes: parsed.data.notes,
-      receivedAt: parsed.data.receivedAt,
-      items: parsed.data.items,
+      payload: parsed.data,
     });
 
     return reply.send({
       ok: true,
-      arrival: out.arrival,
+      proforma: out.proforma,
       items: out.items,
     });
   } catch (e) {
-    if (
-      [
-        "LOCATION_NOT_FOUND",
-        "SUPPLIER_NOT_FOUND",
-        "PRODUCT_NOT_FOUND",
-      ].includes(e.code)
-    ) {
-      return reply.status(404).send({
-        error: e.message,
-        debug: e.debug || undefined,
-      });
+    if (e.code === "BAD_ITEMS") {
+      return reply.status(400).send({ error: e.message });
     }
 
-    if (
-      ["LOCATION_NOT_ACTIVE", "PRODUCT_ARCHIVED", "BAD_ITEMS"].includes(e.code)
-    ) {
-      return reply.status(400).send({
-        error: e.message,
-        debug: e.debug || undefined,
-      });
-    }
-
-    request.log.error({ err: e }, "createInventoryArrival failed");
+    request.log.error({ err: e }, "createProforma failed");
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
 
-async function listInventoryArrivals(request, reply) {
-  const parsed = listInventoryArrivalsQuerySchema.safeParse(
-    request.query || {},
-  );
+async function listProformas(request, reply) {
+  const parsed = listProformasQuerySchema.safeParse(request.query || {});
   if (!parsed.success) {
     return reply.status(400).send({
       error: "Invalid query",
@@ -106,9 +80,10 @@ async function listInventoryArrivals(request, reply) {
       ? (parsed.data.locationId ?? null)
       : request.user.locationId;
 
-    const result = await inventoryArrivalsService.listInventoryArrivals({
+    const out = await proformasService.listProformas({
       locationId: effectiveLocationId,
-      supplierId: parsed.data.supplierId ?? null,
+      customerId: parsed.data.customerId ?? null,
+      status: parsed.data.status ?? null,
       q: parsed.data.q ?? null,
       from: parseIsoDateStart(parsed.data.from),
       toExclusive: parseIsoDateEndExclusive(parsed.data.to),
@@ -118,47 +93,75 @@ async function listInventoryArrivals(request, reply) {
 
     return reply.send({
       ok: true,
-      arrivals: result.rows,
-      nextCursor: result.nextCursor,
+      proformas: out.rows,
+      nextCursor: out.nextCursor,
     });
   } catch (e) {
-    request.log.error({ err: e }, "listInventoryArrivals failed");
+    request.log.error({ err: e }, "listProformas failed");
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
 
-async function getInventoryArrivalById(request, reply) {
-  const arrivalId = Number(request.params?.id);
-  if (!Number.isInteger(arrivalId) || arrivalId <= 0) {
-    return reply.status(400).send({ error: "Invalid arrival id" });
+async function getProformaById(request, reply) {
+  const id = Number(request.params?.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return reply.status(400).send({ error: "Invalid proforma id" });
   }
 
   try {
     const isOwner = normalizeRole(request.user?.role) === "owner";
     const effectiveLocationId = isOwner ? null : request.user.locationId;
 
-    const out = await inventoryArrivalsService.getInventoryArrivalById({
-      arrivalId,
+    const out = await proformasService.getProformaById({
+      proformaId: id,
       locationId: effectiveLocationId,
     });
 
     if (!out) {
-      return reply.status(404).send({ error: "Arrival not found" });
+      return reply.status(404).send({ error: "Proforma not found" });
     }
 
     return reply.send({
       ok: true,
-      arrival: out.arrival,
+      proforma: out.proforma,
       items: out.items,
     });
   } catch (e) {
-    request.log.error({ err: e }, "getInventoryArrivalById failed");
+    request.log.error({ err: e }, "getProformaById failed");
+    return reply.status(500).send({ error: "Internal Server Error" });
+  }
+}
+
+async function renderProforma(request, reply) {
+  const id = Number(request.params?.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return reply.status(400).send({ error: "Invalid proforma id" });
+  }
+
+  try {
+    const isOwner = normalizeRole(request.user?.role) === "owner";
+    const effectiveLocationId = isOwner ? null : request.user.locationId;
+
+    const out = await proformasService.renderProformaDocument({
+      proformaId: id,
+      locationId: effectiveLocationId,
+    });
+
+    if (!out) {
+      return reply.status(404).send({ error: "Proforma not found" });
+    }
+
+    reply.type("text/html; charset=utf-8");
+    return reply.send(out.html);
+  } catch (e) {
+    request.log.error({ err: e }, "renderProforma failed");
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
 
 module.exports = {
-  createInventoryArrival,
-  listInventoryArrivals,
-  getInventoryArrivalById,
+  createProforma,
+  listProformas,
+  getProformaById,
+  renderProforma,
 };

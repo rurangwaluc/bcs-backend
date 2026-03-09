@@ -1,11 +1,13 @@
+"use strict";
+
 const ACTIONS = require("../permissions/actions");
 const { requirePermission } = require("../middleware/requirePermission");
-
 const {
   getOwnerProductsSummary,
   listOwnerProducts,
   getOwnerProductBranches,
   createOwnerProduct,
+  updateOwnerProduct,
   updateOwnerProductPricing,
   archiveOwnerProduct,
   restoreOwnerProduct,
@@ -14,57 +16,49 @@ const {
 async function ownerProductsRoutes(app) {
   app.get(
     "/owner/products/summary",
-    {
-      preHandler: [requirePermission(ACTIONS.OWNER_PRODUCTS_SUMMARY_VIEW)],
-    },
+    { preHandler: [requirePermission(ACTIONS.PRODUCT_VIEW)] },
     getOwnerProductsSummary,
   );
 
   app.get(
     "/owner/products",
-    {
-      preHandler: [requirePermission(ACTIONS.OWNER_PRODUCTS_VIEW)],
-    },
+    { preHandler: [requirePermission(ACTIONS.PRODUCT_VIEW)] },
     listOwnerProducts,
   );
 
   app.get(
     "/owner/products/:id/branches",
-    {
-      preHandler: [requirePermission(ACTIONS.OWNER_PRODUCT_BRANCHES_VIEW)],
-    },
+    { preHandler: [requirePermission(ACTIONS.PRODUCT_VIEW)] },
     getOwnerProductBranches,
   );
 
   app.post(
     "/owner/products",
-    {
-      preHandler: [requirePermission(ACTIONS.OWNER_PRODUCT_CREATE)],
-    },
+    { preHandler: [requirePermission(ACTIONS.PRODUCT_CREATE)] },
     createOwnerProduct,
   );
 
-  app.put(
+  app.patch(
+    "/owner/products/:id",
+    { preHandler: [requirePermission(ACTIONS.PRODUCT_EDIT)] },
+    updateOwnerProduct,
+  );
+
+  app.patch(
     "/owner/products/:id/pricing",
-    {
-      preHandler: [requirePermission(ACTIONS.OWNER_PRODUCT_PRICING_UPDATE)],
-    },
+    { preHandler: [requirePermission(ACTIONS.PRODUCT_EDIT)] },
     updateOwnerProductPricing,
   );
 
-  app.patch(
+  app.post(
     "/owner/products/:id/archive",
-    {
-      preHandler: [requirePermission(ACTIONS.OWNER_PRODUCT_ARCHIVE)],
-    },
+    { preHandler: [requirePermission(ACTIONS.PRODUCT_EDIT)] },
     archiveOwnerProduct,
   );
 
-  app.patch(
+  app.post(
     "/owner/products/:id/restore",
-    {
-      preHandler: [requirePermission(ACTIONS.OWNER_PRODUCT_RESTORE)],
-    },
+    { preHandler: [requirePermission(ACTIONS.PRODUCT_EDIT)] },
     restoreOwnerProduct,
   );
 }

@@ -1,12 +1,10 @@
 const ROLES = require("./roles");
 const ACTIONS = require("./actions");
 
-// Only include real action strings (avoid including ACTIONS.__ALIASES__ object)
 const ALL_ACTION_STRINGS = Object.values(ACTIONS).filter(
   (v) => typeof v === "string",
 );
 
-// Alias maps (legacy <-> canonical)
 const ALIASES = ACTIONS.__ALIASES__ || {};
 const REVERSE_ALIASES = (() => {
   const reverse = {};
@@ -20,12 +18,9 @@ const REVERSE_ALIASES = (() => {
 })();
 
 const policy = {
-  // Owner: everything
   [ROLES.OWNER]: [...ALL_ACTION_STRINGS],
 
-  // Admin: full operations (but not OWNER_ONLY)
   [ROLES.ADMIN]: [
-    // Core
     ACTIONS.AUTH_ME,
     ACTIONS.DASHBOARD_VIEW,
     ACTIONS.DASHBOARD_OWNER_VIEW,
@@ -35,7 +30,6 @@ const policy = {
     ACTIONS.MESSAGE_CREATE,
     ACTIONS.MESSAGE_VIEW,
 
-    // Users / Locations
     ACTIONS.USER_CREATE,
     ACTIONS.USER_VIEW,
     ACTIONS.USER_UPDATE,
@@ -45,31 +39,27 @@ const policy = {
     ACTIONS.LOCATION_VIEW,
     ACTIONS.LOCATION_UPDATE,
 
-    // Notifications
     ACTIONS.NOTIFICATION_VIEW,
     ACTIONS.NOTIFICATION_MARK_READ,
 
-    // Products
     ACTIONS.PRODUCT_CREATE,
     ACTIONS.PRODUCT_VIEW,
     ACTIONS.PRODUCT_UPDATE,
+    ACTIONS.PRODUCT_EDIT,
     ACTIONS.PRODUCT_PRICE_SET,
     ACTIONS.PRODUCT_PRICING_UPDATE,
     ACTIONS.PRODUCT_DELETE,
 
-    // Inventory
     ACTIONS.INVENTORY_VIEW,
     ACTIONS.INVENTORY_CREATE,
     ACTIONS.INVENTORY_ADJUST,
     ACTIONS.INVENTORY_ARRIVAL_CREATE,
     ACTIONS.INVENTORY_ARRIVAL_VIEW,
 
-    // Inventory adjustment requests
     ACTIONS.INVENTORY_ADJUST_REQUEST_CREATE,
     ACTIONS.INVENTORY_ADJUST_REQUEST_VIEW,
     ACTIONS.INVENTORY_ADJUST_REQUEST_DECIDE,
 
-    // Stock requests
     ACTIONS.STOCK_REQUEST_CREATE,
     ACTIONS.STOCK_REQUEST_VIEW,
     ACTIONS.STOCK_REQUEST_DECIDE,
@@ -77,18 +67,15 @@ const policy = {
     ACTIONS.STOCK_RELEASE_CONFIRM,
     ACTIONS.STOCK_RETURN_CONFIRM,
 
-    // Holdings
     ACTIONS.HOLDINGS_VIEW,
     ACTIONS.HOLDINGS_REQUEST_CREATE,
     ACTIONS.HOLDINGS_REQUEST_VIEW,
     ACTIONS.HOLDINGS_REQUEST_DECIDE,
 
-    // Customers
     ACTIONS.CUSTOMER_VIEW,
     ACTIONS.CUSTOMER_CREATE,
     ACTIONS.CUSTOMER_UPDATE,
 
-    // Sales / Payments
     ACTIONS.SALE_CREATE,
     ACTIONS.SALE_VIEW,
     ACTIONS.SALE_MARK,
@@ -98,17 +85,14 @@ const policy = {
     ACTIONS.PAYMENT_RECORD,
     ACTIONS.PAYMENT_VIEW,
 
-    // Credits
     ACTIONS.CREDIT_CREATE,
     ACTIONS.CREDIT_VIEW,
     ACTIONS.CREDIT_DECIDE,
     ACTIONS.CREDIT_SETTLE,
 
-    // Refunds
     ACTIONS.REFUND_CREATE,
     ACTIONS.REFUND_VIEW,
 
-    // Cash / Cashier Ops
     ACTIONS.CASH_SESSION_VIEW,
     ACTIONS.CASH_SESSION_OPEN,
     ACTIONS.CASH_SESSION_CLOSE,
@@ -120,11 +104,9 @@ const policy = {
     ACTIONS.CASH_RECONCILE_CREATE,
     ACTIONS.CASH_REPORT_VIEW,
 
-    // Uploads
     ACTIONS.UPLOAD_CREATE,
     ACTIONS.UPLOAD_VIEW,
 
-    // Suppliers (procurement)
     ACTIONS.SUPPLIER_CREATE,
     ACTIONS.SUPPLIER_VIEW,
     ACTIONS.SUPPLIER_UPDATE,
@@ -136,16 +118,13 @@ const policy = {
     ACTIONS.SUPPLIER_BILL_PAYMENT_CREATE,
     ACTIONS.SUPPLIER_REPORT_VIEW,
 
-    // Legacy support (kept)
     ACTIONS.CASH_LEDGER_MANAGE,
     ACTIONS.CASH_LEDGER_VIEW,
 
     ACTIONS.ADMIN_DASHBOARD_VIEW,
   ],
 
-  // Manager: pricing + oversight + approvals
   [ROLES.MANAGER]: [
-    // Core
     ACTIONS.AUTH_ME,
     ACTIONS.DASHBOARD_VIEW,
     ACTIONS.REPORT_VIEW,
@@ -154,53 +133,42 @@ const policy = {
     ACTIONS.MESSAGE_CREATE,
     ACTIONS.MESSAGE_VIEW,
 
-    // Notifications
     ACTIONS.NOTIFICATION_VIEW,
     ACTIONS.NOTIFICATION_MARK_READ,
 
-    // Products (pricing control)
     ACTIONS.PRODUCT_VIEW,
     ACTIONS.PRODUCT_UPDATE,
+    ACTIONS.PRODUCT_EDIT,
     ACTIONS.PRODUCT_PRICE_SET,
     ACTIONS.PRODUCT_PRICING_UPDATE,
     ACTIONS.PRODUCT_PRICING_MANAGE,
 
-    // Inventory (view + decide requests)
     ACTIONS.INVENTORY_VIEW,
     ACTIONS.INVENTORY_ARRIVAL_VIEW,
     ACTIONS.INVENTORY_ADJUST_REQUEST_VIEW,
     ACTIONS.INVENTORY_ADJUST_REQUEST_DECIDE,
 
-    // Stock requests (decisions)
     ACTIONS.STOCK_REQUEST_VIEW,
     ACTIONS.STOCK_REQUEST_DECIDE,
 
-    // Sales / refunds oversight
     ACTIONS.SALE_VIEW,
     ACTIONS.SALE_CANCEL,
     ACTIONS.REFUND_CREATE,
     ACTIONS.REFUND_VIEW,
 
-    // Payments view
     ACTIONS.PAYMENT_VIEW,
 
-    // Credits: Manager approves/rejects, does NOT settle
     ACTIONS.CREDIT_VIEW,
     ACTIONS.CREDIT_DECIDE,
 
-    // Cash reporting / recon
     ACTIONS.CASH_REPORT_VIEW,
     ACTIONS.CASH_RECONCILE_VIEW,
     ACTIONS.CASH_RECONCILE_CREATE,
     ACTIONS.CASH_LEDGER_VIEW,
 
-    // Users view only
     ACTIONS.USER_VIEW,
-
-    // Uploads (view only)
     ACTIONS.UPLOAD_VIEW,
 
-    // Suppliers (view + create bills; payments remain owner/admin)
     ACTIONS.SUPPLIER_VIEW,
     ACTIONS.SUPPLIER_BILL_CREATE,
     ACTIONS.SUPPLIER_BILL_VIEW,
@@ -211,55 +179,43 @@ const policy = {
     ACTIONS.CUSTOMER_VIEW,
   ],
 
-  // Store keeper: stock + requests + arrivals
   [ROLES.STORE_KEEPER]: [
     ACTIONS.INVENTORY_CREATE,
-    // Core
     ACTIONS.AUTH_ME,
     ACTIONS.MESSAGE_CREATE,
     ACTIONS.MESSAGE_VIEW,
 
-    // Products
     ACTIONS.PRODUCT_CREATE,
     ACTIONS.PRODUCT_VIEW,
     ACTIONS.PRODUCT_DELETE,
 
-    // Notifications
     ACTIONS.NOTIFICATION_VIEW,
     ACTIONS.NOTIFICATION_MARK_READ,
 
-    // Inventory + arrivals
     ACTIONS.INVENTORY_VIEW,
     ACTIONS.INVENTORY_ARRIVAL_CREATE,
     ACTIONS.INVENTORY_ARRIVAL_VIEW,
 
-    // Inventory adjustment requests
     ACTIONS.INVENTORY_ADJUST_REQUEST_CREATE,
     ACTIONS.INVENTORY_ADJUST_REQUEST_VIEW,
 
-    // Stock requests + releases
     ACTIONS.STOCK_REQUEST_VIEW,
     ACTIONS.STOCK_REQUEST_DECIDE,
     ACTIONS.STOCK_RELEASE_TO_SELLER,
     ACTIONS.STOCK_RELEASE_CONFIRM,
     ACTIONS.STOCK_RETURN_CONFIRM,
 
-    // Holdings
     ACTIONS.HOLDINGS_VIEW,
 
-    // Storekeeper fulfills sales (Option B)
     ACTIONS.SALE_VIEW,
     ACTIONS.SALE_FULFILL,
 
-    // Uploads
     ACTIONS.UPLOAD_CREATE,
     ACTIONS.UPLOAD_VIEW,
 
-    // Legacy support (kept)
     ACTIONS.STOCK_REQUEST_APPROVE,
   ],
 
-  // Seller
   [ROLES.SELLER]: [
     ACTIONS.AUTH_ME,
     ACTIONS.MESSAGE_CREATE,
@@ -280,21 +236,16 @@ const policy = {
     ACTIONS.SALE_VIEW,
     ACTIONS.SALE_MARK,
 
-    // Notifications
     ACTIONS.NOTIFICATION_VIEW,
     ACTIONS.NOTIFICATION_MARK_READ,
 
-    // Credits: Seller can request credit + track status
     ACTIONS.CREDIT_CREATE,
     ACTIONS.CREDIT_VIEW,
 
     ACTIONS.REFUND_VIEW,
-
-    // Uploads (view only)
     ACTIONS.UPLOAD_VIEW,
   ],
 
-  // Cashier
   [ROLES.CASHIER]: [
     ACTIONS.AUTH_ME,
     ACTIONS.MESSAGE_CREATE,
@@ -322,14 +273,11 @@ const policy = {
 
     ACTIONS.REFUND_VIEW,
 
-    // Notifications
     ACTIONS.NOTIFICATION_VIEW,
     ACTIONS.NOTIFICATION_MARK_READ,
 
-    // Uploads (view only)
     ACTIONS.UPLOAD_VIEW,
 
-    // Credits: Cashier must SEE credits to settle them
     ACTIONS.CREDIT_VIEW,
     ACTIONS.CREDIT_SETTLE,
 
@@ -343,16 +291,13 @@ function can(role, action) {
   const allowed = policy[role] || [];
   if (!action) return false;
 
-  // Direct
   if (allowed.includes(action)) return true;
 
-  // If required action is legacy, allow any canonical target
   const forward = ALIASES[action];
   if (Array.isArray(forward) && forward.some((a) => allowed.includes(a))) {
     return true;
   }
 
-  // If required action is canonical, allow any legacy permission that maps to it
   const reverseSet = REVERSE_ALIASES[action];
   if (reverseSet) {
     for (const legacy of reverseSet) {

@@ -1,10 +1,11 @@
 "use strict";
 
 const {
-  createInventoryArrivalSchema,
-  listInventoryArrivalsQuerySchema,
-} = require("../validators/inventory.arrivals.schema");
-const inventoryArrivalsService = require("../services/inventoryArrivalsService");
+  createGoodsReceiptSchema,
+  listGoodsReceiptsQuerySchema,
+} = require("../validators/goodsReceipts.schema");
+
+const goodsReceiptsService = require("../services/goodsReceiptsService");
 
 function normalizeRole(role) {
   return String(role || "")
@@ -28,8 +29,8 @@ function parseIsoDateEndExclusive(value) {
   return d;
 }
 
-async function createInventoryArrival(request, reply) {
-  const parsed = createInventoryArrivalSchema.safeParse(request.body || {});
+async function createGoodsReceipt(request, reply) {
+  const parsed = createGoodsReceiptSchema.safeParse(request.body || {});
   if (!parsed.success) {
     return reply.status(400).send({
       error: "Invalid payload",
@@ -43,56 +44,45 @@ async function createInventoryArrival(request, reply) {
     : request.user.locationId;
 
   try {
-    const out = await inventoryArrivalsService.createInventoryArrival({
+    const out = await goodsReceiptsService.createGoodsReceipt({
       actorUser: request.user,
       locationId: effectiveLocationId,
-      supplierId: parsed.data.supplierId,
+      purchaseOrderId: parsed.data.purchaseOrderId,
+      receiptNo: parsed.data.receiptNo,
       reference: parsed.data.reference,
-      documentNo: parsed.data.documentNo,
-      sourceType: parsed.data.sourceType,
-      sourceId: parsed.data.sourceId,
-      notes: parsed.data.notes,
+      note: parsed.data.note,
       receivedAt: parsed.data.receivedAt,
       items: parsed.data.items,
     });
 
     return reply.send({
       ok: true,
-      arrival: out.arrival,
+      goodsReceipt: out.goodsReceipt,
       items: out.items,
     });
   } catch (e) {
+    if (e.code === "NOT_FOUND") {
+      return reply.status(404).send({ error: e.message });
+    }
+
     if (
-      [
-        "LOCATION_NOT_FOUND",
-        "SUPPLIER_NOT_FOUND",
-        "PRODUCT_NOT_FOUND",
-      ].includes(e.code)
+      ["BAD_STATUS", "BAD_ITEMS", "PRODUCT_REQUIRED", "OVER_RECEIPT"].includes(
+        e.code,
+      )
     ) {
-      return reply.status(404).send({
+      return reply.status(409).send({
         error: e.message,
         debug: e.debug || undefined,
       });
     }
 
-    if (
-      ["LOCATION_NOT_ACTIVE", "PRODUCT_ARCHIVED", "BAD_ITEMS"].includes(e.code)
-    ) {
-      return reply.status(400).send({
-        error: e.message,
-        debug: e.debug || undefined,
-      });
-    }
-
-    request.log.error({ err: e }, "createInventoryArrival failed");
+    request.log.error({ err: e }, "createGoodsReceipt failed");
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
 
-async function listInventoryArrivals(request, reply) {
-  const parsed = listInventoryArrivalsQuerySchema.safeParse(
-    request.query || {},
-  );
+async function listGoodsReceipts(request, reply) {
+  const parsed = listGoodsReceiptsQuerySchema.safeParse(request.query || {});
   if (!parsed.success) {
     return reply.status(400).send({
       error: "Invalid query",
@@ -106,8 +96,9 @@ async function listInventoryArrivals(request, reply) {
       ? (parsed.data.locationId ?? null)
       : request.user.locationId;
 
-    const result = await inventoryArrivalsService.listInventoryArrivals({
+    const result = await goodsReceiptsService.listGoodsReceipts({
       locationId: effectiveLocationId,
+      purchaseOrderId: parsed.data.purchaseOrderId ?? null,
       supplierId: parsed.data.supplierId ?? null,
       q: parsed.data.q ?? null,
       from: parseIsoDateStart(parsed.data.from),
@@ -118,47 +109,47 @@ async function listInventoryArrivals(request, reply) {
 
     return reply.send({
       ok: true,
-      arrivals: result.rows,
+      goodsReceipts: result.rows,
       nextCursor: result.nextCursor,
     });
   } catch (e) {
-    request.log.error({ err: e }, "listInventoryArrivals failed");
+    request.log.error({ err: e }, "listGoodsReceipts failed");
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
 
-async function getInventoryArrivalById(request, reply) {
-  const arrivalId = Number(request.params?.id);
-  if (!Number.isInteger(arrivalId) || arrivalId <= 0) {
-    return reply.status(400).send({ error: "Invalid arrival id" });
+async function getGoodsReceiptById(request, reply) {
+  const goodsReceiptId = Number(request.params?.id);
+  if (!Number.isInteger(goodsReceiptId) || goodsReceiptId <= 0) {
+    return reply.status(400).send({ error: "Invalid goods receipt id" });
   }
 
   try {
     const isOwner = normalizeRole(request.user?.role) === "owner";
     const effectiveLocationId = isOwner ? null : request.user.locationId;
 
-    const out = await inventoryArrivalsService.getInventoryArrivalById({
-      arrivalId,
+    const out = await goodsReceiptsService.getGoodsReceiptById({
+      goodsReceiptId,
       locationId: effectiveLocationId,
     });
 
     if (!out) {
-      return reply.status(404).send({ error: "Arrival not found" });
+      return reply.status(404).send({ error: "Goods receipt not found" });
     }
 
     return reply.send({
       ok: true,
-      arrival: out.arrival,
+      goodsReceipt: out.goodsReceipt,
       items: out.items,
     });
   } catch (e) {
-    request.log.error({ err: e }, "getInventoryArrivalById failed");
+    request.log.error({ err: e }, "getGoodsReceiptById failed");
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
 
 module.exports = {
-  createInventoryArrival,
-  listInventoryArrivals,
-  getInventoryArrivalById,
+  createGoodsReceipt,
+  listGoodsReceipts,
+  getGoodsReceiptById,
 };

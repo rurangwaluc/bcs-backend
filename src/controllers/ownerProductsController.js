@@ -1,5 +1,10 @@
+"use strict";
+
 const ownerProductsService = require("../services/ownerProductsService");
-const { createProductSchema } = require("../validators/inventory.schema");
+const {
+  createProductSchema,
+  updateProductSchema,
+} = require("../validators/inventory.schema");
 const {
   updateProductPricingSchema,
 } = require("../validators/productPricing.schema");
@@ -106,6 +111,49 @@ async function createOwnerProduct(request, reply) {
   }
 }
 
+async function updateOwnerProduct(request, reply) {
+  const productId = Number(request.params.id);
+  if (!Number.isFinite(productId) || productId <= 0) {
+    return reply.status(400).send({ error: "Invalid product id" });
+  }
+
+  const parsed = updateProductSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({
+      error: "Invalid payload",
+      details: parsed.error.flatten(),
+    });
+  }
+
+  try {
+    const product = await ownerProductsService.updateOwnerProduct({
+      actorUser: request.user,
+      productId,
+      data: parsed.data,
+    });
+
+    return reply.send({ ok: true, product });
+  } catch (e) {
+    if (e.code === "NOT_FOUND") {
+      return reply.status(404).send({ error: "Product not found" });
+    }
+    if (e.code === "INVALID_LOCATION") {
+      return reply.status(400).send({ error: "Invalid location id" });
+    }
+    if (e.code === "LOCATION_NOT_FOUND") {
+      return reply.status(404).send({ error: "Location not found" });
+    }
+    if (e.code === "LOCATION_NOT_ACTIVE") {
+      return reply
+        .status(409)
+        .send({ error: "Product can only be moved to an active branch" });
+    }
+
+    request.log.error(e);
+    return reply.status(500).send({ error: "Internal Server Error" });
+  }
+}
+
 async function updateOwnerProductPricing(request, reply) {
   const productId = Number(request.params.id);
   if (!Number.isFinite(productId) || productId <= 0) {
@@ -192,6 +240,7 @@ module.exports = {
   listOwnerProducts,
   getOwnerProductBranches,
   createOwnerProduct,
+  updateOwnerProduct,
   updateOwnerProductPricing,
   archiveOwnerProduct,
   restoreOwnerProduct,
