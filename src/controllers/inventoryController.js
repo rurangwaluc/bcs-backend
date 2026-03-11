@@ -22,7 +22,31 @@ function parseIncludeInactive(value) {
   const v = String(value || "")
     .trim()
     .toLowerCase();
+
   return v === "1" || v === "true";
+}
+
+function resolveLocationId(user) {
+  const raw =
+    user?.locationId ?? user?.location_id ?? user?.location?.id ?? null;
+
+  const id = Number(raw);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function ensureLocationId(request, reply, actionName) {
+  const locationId = resolveLocationId(request.user);
+
+  if (!locationId) {
+    request.log.error(
+      { user: request.user },
+      `${actionName} failed: missing user locationId`,
+    );
+    reply.status(400).send({ error: "Missing user location" });
+    return null;
+  }
+
+  return locationId;
 }
 
 async function createProduct(request, reply) {
@@ -34,10 +58,13 @@ async function createProduct(request, reply) {
     });
   }
 
+  const locationId = ensureLocationId(request, reply, "createProduct");
+  if (!locationId) return;
+
   try {
     const created = await inventoryService.createProduct({
-      locationId: request.user.locationId,
-      userId: request.user.id,
+      locationId,
+      userId: request.user?.id ?? null,
       data: parsed.data,
     });
 
@@ -49,7 +76,15 @@ async function createProduct(request, reply) {
       },
     });
   } catch (e) {
-    request.log.error({ err: e }, "createProduct failed");
+    request.log.error(
+      {
+        err: e,
+        user: request.user,
+        locationId,
+        body: request.body,
+      },
+      "createProduct failed",
+    );
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
@@ -58,16 +93,27 @@ async function listProducts(request, reply) {
   const includePurchasePrice = canSeePurchasePrice(request.user?.role);
   const includeInactive = parseIncludeInactive(request.query?.includeInactive);
 
+  const locationId = ensureLocationId(request, reply, "listProducts");
+  if (!locationId) return;
+
   try {
     const rows = await inventoryService.listProducts({
-      locationId: request.user.locationId,
+      locationId,
       includePurchasePrice,
       includeInactive,
     });
 
     return reply.send({ ok: true, products: rows });
   } catch (e) {
-    request.log.error({ err: e }, "listProducts failed");
+    request.log.error(
+      {
+        err: e,
+        user: request.user,
+        query: request.query,
+        locationId,
+      },
+      "listProducts failed",
+    );
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
@@ -75,15 +121,26 @@ async function listProducts(request, reply) {
 async function listInventory(request, reply) {
   const includeInactive = parseIncludeInactive(request.query?.includeInactive);
 
+  const locationId = ensureLocationId(request, reply, "listInventory");
+  if (!locationId) return;
+
   try {
     const rows = await inventoryService.getInventoryBalances({
-      locationId: request.user.locationId,
+      locationId,
       includeInactive,
     });
 
     return reply.send({ ok: true, inventory: rows });
   } catch (e) {
-    request.log.error({ err: e }, "listInventory failed");
+    request.log.error(
+      {
+        err: e,
+        user: request.user,
+        query: request.query,
+        locationId,
+      },
+      "listInventory failed",
+    );
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
@@ -97,10 +154,13 @@ async function adjustInventory(request, reply) {
     });
   }
 
+  const locationId = ensureLocationId(request, reply, "adjustInventory");
+  if (!locationId) return;
+
   try {
     const out = await inventoryService.adjustInventory({
-      locationId: request.user.locationId,
-      userId: request.user.id,
+      locationId,
+      userId: request.user?.id ?? null,
       productId: parsed.data.productId,
       qtyChange: parsed.data.qtyChange,
       reason: parsed.data.reason,
@@ -124,7 +184,15 @@ async function adjustInventory(request, reply) {
       return reply.status(400).send({ error: e.message });
     }
 
-    request.log.error({ err: e }, "adjustInventory failed");
+    request.log.error(
+      {
+        err: e,
+        user: request.user,
+        locationId,
+        body: request.body,
+      },
+      "adjustInventory failed",
+    );
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
@@ -143,10 +211,13 @@ async function updateProductPricing(request, reply) {
     });
   }
 
+  const locationId = ensureLocationId(request, reply, "updateProductPricing");
+  if (!locationId) return;
+
   try {
     const updated = await inventoryService.updateProductPricing({
-      locationId: request.user.locationId,
-      userId: request.user.id,
+      locationId,
+      userId: request.user?.id ?? null,
       productId,
       purchasePrice: parsed.data.purchasePrice,
       sellingPrice: parsed.data.sellingPrice,
@@ -159,7 +230,16 @@ async function updateProductPricing(request, reply) {
       return reply.status(404).send({ error: "Product not found" });
     }
 
-    request.log.error({ err: e }, "updateProductPricing failed");
+    request.log.error(
+      {
+        err: e,
+        user: request.user,
+        locationId,
+        productId,
+        body: request.body,
+      },
+      "updateProductPricing failed",
+    );
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
@@ -170,10 +250,13 @@ async function archiveProduct(request, reply) {
     return reply.status(400).send({ error: "Invalid product id" });
   }
 
+  const locationId = ensureLocationId(request, reply, "archiveProduct");
+  if (!locationId) return;
+
   try {
     const updated = await inventoryService.archiveProduct({
-      locationId: request.user.locationId,
-      userId: request.user.id,
+      locationId,
+      userId: request.user?.id ?? null,
       productId,
       reason: request.body?.reason,
     });
@@ -184,7 +267,16 @@ async function archiveProduct(request, reply) {
       return reply.status(404).send({ error: "Product not found" });
     }
 
-    request.log.error({ err: e }, "archiveProduct failed");
+    request.log.error(
+      {
+        err: e,
+        user: request.user,
+        locationId,
+        productId,
+        body: request.body,
+      },
+      "archiveProduct failed",
+    );
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
@@ -195,10 +287,13 @@ async function restoreProduct(request, reply) {
     return reply.status(400).send({ error: "Invalid product id" });
   }
 
+  const locationId = ensureLocationId(request, reply, "restoreProduct");
+  if (!locationId) return;
+
   try {
     const updated = await inventoryService.restoreProduct({
-      locationId: request.user.locationId,
-      userId: request.user.id,
+      locationId,
+      userId: request.user?.id ?? null,
       productId,
     });
 
@@ -208,7 +303,15 @@ async function restoreProduct(request, reply) {
       return reply.status(404).send({ error: "Product not found" });
     }
 
-    request.log.error({ err: e }, "restoreProduct failed");
+    request.log.error(
+      {
+        err: e,
+        user: request.user,
+        locationId,
+        productId,
+      },
+      "restoreProduct failed",
+    );
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
@@ -219,10 +322,13 @@ async function deleteProduct(request, reply) {
     return reply.status(400).send({ error: "Invalid product id" });
   }
 
+  const locationId = ensureLocationId(request, reply, "deleteProduct");
+  if (!locationId) return;
+
   try {
     const out = await inventoryService.deleteProductIfSafe({
-      locationId: request.user.locationId,
-      userId: request.user.id,
+      locationId,
+      userId: request.user?.id ?? null,
       productId,
     });
 
@@ -242,7 +348,15 @@ async function deleteProduct(request, reply) {
         .send({ error: "Cannot delete: product has notes" });
     }
 
-    request.log.error({ err: e }, "deleteProduct failed");
+    request.log.error(
+      {
+        err: e,
+        user: request.user,
+        locationId,
+        productId,
+      },
+      "deleteProduct failed",
+    );
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }

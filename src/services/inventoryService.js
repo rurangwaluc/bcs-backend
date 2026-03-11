@@ -186,46 +186,48 @@ async function listProducts({
   includePurchasePrice,
   includeInactive = false,
 }) {
-  const where = includeInactive
-    ? eq(products.locationId, locationId)
-    : and(eq(products.locationId, locationId), eq(products.isActive, true));
+  const extraWhere = includeInactive ? sql`` : sql` AND p.is_active = true`;
 
-  const rows = await db
-    .select({
-      id: products.id,
-      locationId: products.locationId,
-      name: products.name,
-      displayName: products.displayName,
-      category: products.category,
-      subcategory: products.subcategory,
-      sku: products.sku,
-      barcode: products.barcode,
-      supplierSku: products.supplierSku,
-      brand: products.brand,
-      model: products.model,
-      size: products.size,
-      color: products.color,
-      material: products.material,
-      variantSummary: products.variantSummary,
-      unit: products.unit,
-      stockUnit: products.stockUnit,
-      salesUnit: products.salesUnit,
-      purchaseUnit: products.purchaseUnit,
-      purchaseUnitFactor: products.purchaseUnitFactor,
-      sellingPrice: products.sellingPrice,
-      costPrice: products.costPrice,
-      maxDiscountPercent: products.maxDiscountPercent,
-      trackInventory: products.trackInventory,
-      reorderLevel: products.reorderLevel,
-      attributes: products.attributes,
-      isActive: products.isActive,
-      notes: products.notes,
-      createdAt: products.createdAt,
-      updatedAt: products.updatedAt,
-    })
-    .from(products)
-    .where(where);
+  const result = await db.execute(sql`
+    SELECT
+      p.id,
+      p.location_id as "locationId",
+      p.name,
+      p.display_name as "displayName",
+      p.category,
+      p.subcategory,
+      p.sku,
+      p.barcode as "barcode",
+      p.supplier_sku as "supplierSku",
+      p.brand,
+      p.model,
+      p.size,
+      p.color,
+      p.material,
+      p.variant_summary as "variantSummary",
+      p.unit,
+      p.stock_unit as "stockUnit",
+      p.sales_unit as "salesUnit",
+      p.purchase_unit as "purchaseUnit",
+      p.purchase_unit_factor as "purchaseUnitFactor",
+      p.selling_price as "sellingPrice",
+      p.cost_price as "purchasePrice",
+      p.max_discount_percent as "maxDiscountPercent",
+      p.track_inventory as "trackInventory",
+      p.reorder_level as "reorderLevel",
+      p.attributes,
+      p.is_active as "isActive",
+      p.notes,
+      p.created_at as "createdAt",
+      p.updated_at as "updatedAt",
+      NULL::bigint as "qtyOnHand"
+    FROM products p
+    WHERE p.location_id = ${locationId}
+    ${extraWhere}
+    ORDER BY p.id DESC
+  `);
 
+  const rows = result.rows || result || [];
   return rows.map((row) => mapProductRow(row, includePurchasePrice));
 }
 

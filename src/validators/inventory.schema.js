@@ -100,9 +100,21 @@ const adjustInventorySchema = z.object({
   qtyChange: z.coerce.number().int(),
   reason: z.string().trim().min(3).max(300),
 });
+const ownerAdjustInventorySchema = z.object({
+  locationId: z.coerce.number().int().positive(),
+  productId: z.coerce.number().int().positive(),
+  qtyChange: z.coerce
+    .number()
+    .int()
+    .refine((v) => v !== 0, {
+      message: "qtyChange must not be zero",
+    }),
+  reason: z.string().trim().min(3).max(300),
+});
 
 module.exports = {
   createProductSchema,
   updateProductSchema,
   adjustInventorySchema,
+  ownerAdjustInventorySchema,
 };

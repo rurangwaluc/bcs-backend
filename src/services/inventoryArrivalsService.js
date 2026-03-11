@@ -23,6 +23,7 @@ function clampInt(n, min, max, fallback) {
 }
 
 function toInt(value, fallback = null) {
+  if (value === null || value === undefined || value === "") return fallback;
   const n = Number(value);
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
@@ -113,6 +114,7 @@ async function getArrivalProductOrThrow(tx, { locationId, productId }) {
       purchaseUnit: products.purchaseUnit,
       purchaseUnitFactor: products.purchaseUnitFactor,
       costPrice: products.costPrice,
+      unit: products.unit,
       isActive: products.isActive,
     })
     .from(products)
@@ -354,7 +356,7 @@ async function listInventoryArrivals({
     where = sql`${where} AND ia.location_id = ${Number(locationId)}`;
   }
 
-  if (supplierIdInt != null) {
+  if (supplierIdInt != null && supplierIdInt > 0) {
     where = sql`${where} AND ia.supplier_id = ${supplierIdInt}`;
   }
 
