@@ -6,7 +6,7 @@ const {
   approvePurchaseOrderSchema,
   cancelPurchaseOrderSchema,
   listPurchaseOrdersQuerySchema,
-} = require("../validators/purchaseOrders.schema");
+} = require("../validators/purchaseorders.schema");
 
 const purchaseOrdersService = require("../services/purchaseOrdersService");
 
