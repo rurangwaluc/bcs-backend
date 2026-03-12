@@ -12,7 +12,6 @@ async function paymentsRoutes(app) {
     "/payments",
     {
       preHandler: [requirePermission(ACTIONS.PAYMENT_RECORD)],
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
     },
     recordPayment,
   );
