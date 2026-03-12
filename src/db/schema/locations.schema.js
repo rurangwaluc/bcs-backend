@@ -6,6 +6,7 @@ const {
   index,
   timestamp,
   pgEnum,
+  jsonb,
 } = require("drizzle-orm/pg-core");
 
 const locationStatusEnum = pgEnum("location_status", [
@@ -22,6 +23,13 @@ const locations = pgTable(
     code: varchar("code", { length: 40 }).notNull(),
 
     status: locationStatusEnum("status").notNull().default("ACTIVE"),
+
+    // business document info
+    email: varchar("email", { length: 160 }),
+    address: varchar("address", { length: 255 }),
+    tin: varchar("tin", { length: 64 }),
+    momoCode: varchar("momo_code", { length: 64 }),
+    bankAccounts: jsonb("bank_accounts").$type().notNull().default([]),
 
     openedAt: timestamp("opened_at", { withTimezone: true })
       .notNull()

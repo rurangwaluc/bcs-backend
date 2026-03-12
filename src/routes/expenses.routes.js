@@ -9,13 +9,13 @@ const {
 
 async function expensesRoutes(app) {
   app.get(
-    "/expenses",
+    "/cash/expenses",
     { preHandler: [requirePermission(ACTIONS.EXPENSE_VIEW)] },
     listExpenses,
   );
 
   app.post(
-    "/expenses",
+    "/cash/expenses",
     { preHandler: [requirePermission(ACTIONS.EXPENSE_CREATE)] },
     createExpense,
   );

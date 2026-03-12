@@ -66,6 +66,11 @@ async function buildUserWithLocation(userId) {
         id: locations.id,
         name: locations.name,
         code: locations.code,
+        email: locations.email,
+        address: locations.address,
+        tin: locations.tin,
+        momoCode: locations.momoCode,
+        bankAccounts: locations.bankAccounts,
       },
     })
     .from(users)
@@ -75,7 +80,9 @@ async function buildUserWithLocation(userId) {
   const u = rows[0];
   if (!u) return null;
 
-  const loc = u.location?.id ? u.location : { id: null, name: null, code: null };
+  const loc = u.location?.id
+    ? u.location
+    : { id: null, name: null, code: null };
 
   return {
     id: String(u.id),
@@ -86,8 +93,21 @@ async function buildUserWithLocation(userId) {
     lastSeenAt: u.lastSeenAt ? new Date(u.lastSeenAt).toISOString() : null,
     location: {
       id: loc.id != null ? String(loc.id) : null,
-      name: loc.name,
-      code: loc.code,
+      name: loc.name || null,
+      code: loc.code || null,
+      email: loc.email || null,
+      address: loc.address || null,
+      tin: loc.tin || null,
+      momoCode: loc.momoCode || null,
+      bankAccounts: Array.isArray(loc.bankAccounts) ? loc.bankAccounts : [],
+    },
+    business: {
+      name: loc.name || null,
+      email: loc.email || null,
+      address: loc.address || null,
+      tin: loc.tin || null,
+      momoCode: loc.momoCode || null,
+      bankAccounts: Array.isArray(loc.bankAccounts) ? loc.bankAccounts : [],
     },
   };
 }
@@ -108,7 +128,9 @@ async function touchLastSeen(userId, request) {
 async function login(request, reply) {
   const { email, password } = request.body || {};
 
-  const em = String(email || "").trim().toLowerCase();
+  const em = String(email || "")
+    .trim()
+    .toLowerCase();
   const pw = String(password || "");
 
   if (!em || !pw) {
