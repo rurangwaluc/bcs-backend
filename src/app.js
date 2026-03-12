@@ -33,7 +33,7 @@ const {
 } = require("./routes/ownerSuppliersWrite.routes");
 
 const { goodsReceiptsRoutes } = require("./routes/goodsReceipts.routes");
-const { purchaseOrdersRoutes } = require("./routes/purchaseOrders.routes");
+const { purchaseOrdersRoutes } = require("./routes/purchaseorders.routes");
 
 const { proformasRoutes } = require("./routes/proformas.routes");
 const { deliveryNotesRoutes } = require("./routes/deliveryNotes.routes");
