@@ -108,14 +108,15 @@ async function getArrivalProductOrThrow(tx, { locationId, productId }) {
       id: products.id,
       locationId: products.locationId,
       name: products.name,
-      displayName: products.displayName,
       sku: products.sku,
-      stockUnit: products.stockUnit,
-      purchaseUnit: products.purchaseUnit,
-      purchaseUnitFactor: products.purchaseUnitFactor,
-      costPrice: products.costPrice,
       unit: products.unit,
+      costPrice: products.costPrice,
       isActive: products.isActive,
+      brand: products.brand,
+      model: products.model,
+      size: products.size,
+      color: products.color,
+      variantLabel: products.variantLabel,
     })
     .from(products)
     .where(
@@ -156,21 +157,29 @@ function computeArrivalLine(product, item) {
     throw err;
   }
 
-  const purchaseUnitFactor = Math.max(
-    1,
-    toInt(product.purchaseUnitFactor, 1) || 1,
-  );
-
-  const stockQtyReceived = (qtyReceived + bonusQty) * purchaseUnitFactor;
+  const purchaseUnitFactor = 1;
+  const stockQtyReceived = qtyReceived + bonusQty;
   const lineTotal = qtyReceived * unitCost;
+
+  const productDisplayName = [
+    cleanText(product.name, 180),
+    cleanText(product.brand, 80),
+    cleanText(product.model, 120),
+    cleanText(product.size, 40),
+    cleanText(product.color, 40),
+    cleanText(product.variantLabel, 120),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
 
   return {
     productId: Number(product.id),
     productName: product.name,
-    productDisplayName: product.displayName || product.name,
+    productDisplayName: productDisplayName || product.name,
     productSku: product.sku || null,
-    stockUnit: product.stockUnit || product.unit || "PIECE",
-    purchaseUnit: product.purchaseUnit || product.stockUnit || "PIECE",
+    stockUnit: product.unit || "PIECE",
+    purchaseUnit: product.unit || "PIECE",
     purchaseUnitFactor,
     qtyReceived,
     bonusQty,
@@ -329,10 +338,46 @@ async function createInventoryArrival({
       },
     });
 
-    return getInventoryArrivalById({
-      arrivalId: Number(arrival.id),
-      locationId: null,
-    });
+    return {
+      arrival: {
+        id: Number(arrival.id),
+        locationId: Number(arrival.locationId),
+        supplierId:
+          arrival.supplierId == null ? null : Number(arrival.supplierId),
+        reference: arrival.reference ?? null,
+        documentNo: arrival.documentNo ?? null,
+        sourceType: arrival.sourceType ?? "MANUAL",
+        sourceId: arrival.sourceId == null ? null : Number(arrival.sourceId),
+        notes: arrival.notes ?? null,
+        totalAmount: Number(arrival.totalAmount || 0),
+        receivedByUserId: Number(arrival.receivedByUserId),
+        receivedAt: arrival.receivedAt,
+        createdAt: arrival.createdAt,
+        itemsCount: lines.length,
+        totalStockQtyReceived: lines.reduce(
+          (sum, line) => sum + Number(line.stockQtyReceived || 0),
+          0,
+        ),
+      },
+      items: lines.map((line, idx) => ({
+        id: idx + 1,
+        arrivalId: Number(arrival.id),
+        productId: line.productId,
+        productName: line.productName,
+        productDisplayName: line.productDisplayName,
+        productSku: line.productSku,
+        stockUnit: line.stockUnit,
+        purchaseUnit: line.purchaseUnit,
+        purchaseUnitFactor: line.purchaseUnitFactor,
+        qtyReceived: line.qtyReceived,
+        bonusQty: line.bonusQty,
+        stockQtyReceived: line.stockQtyReceived,
+        unitCost: line.unitCost,
+        lineTotal: line.lineTotal,
+        note: line.note,
+        createdAt: arrival.createdAt,
+      })),
+    };
   });
 }
 
