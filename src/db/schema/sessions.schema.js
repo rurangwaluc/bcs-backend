@@ -3,7 +3,8 @@ const {
   serial,
   integer,
   varchar,
-  timestamp
+  timestamp,
+  text,
 } = require("drizzle-orm/pg-core");
 
 const sessions = pgTable("sessions", {
@@ -13,7 +14,13 @@ const sessions = pgTable("sessions", {
   sessionToken: varchar("session_token", { length: 255 }).notNull(),
   expiresAt: timestamp("expires_at").notNull(),
 
-  createdAt: timestamp("created_at").defaultNow()
+  // Coverage mode (session-level, not user-level)
+  actingAsRole: varchar("acting_as_role", { length: 50 }),
+  coverageReason: varchar("coverage_reason", { length: 50 }),
+  coverageNote: text("coverage_note"),
+  coverageStartedAt: timestamp("coverage_started_at"),
+
+  createdAt: timestamp("created_at").defaultNow(),
 });
 
 module.exports = { sessions };

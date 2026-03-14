@@ -1,4 +1,3 @@
-// backend/src/middleware/sessionAuth.js
 const crypto = require("crypto");
 
 const { db } = require("../config/db");
@@ -28,6 +27,7 @@ function readSignedSid(request) {
 async function sessionAuth(request) {
   const tokenRaw = readSignedSid(request);
   if (!tokenRaw) {
+    request.session = null;
     request.user = null;
     return;
   }
@@ -36,12 +36,23 @@ async function sessionAuth(request) {
   const now = new Date();
 
   const sessionRows = await db
-    .select()
+    .select({
+      id: sessions.id,
+      userId: sessions.userId,
+      sessionToken: sessions.sessionToken,
+      expiresAt: sessions.expiresAt,
+      actingAsRole: sessions.actingAsRole,
+      coverageReason: sessions.coverageReason,
+      coverageNote: sessions.coverageNote,
+      coverageStartedAt: sessions.coverageStartedAt,
+      createdAt: sessions.createdAt,
+    })
     .from(sessions)
     .where(eq(sessions.sessionToken, tokenHash));
 
   const session = sessionRows[0];
   if (!session || session.expiresAt <= now) {
+    request.session = null;
     request.user = null;
     return;
   }
@@ -54,8 +65,6 @@ async function sessionAuth(request) {
       email: users.email,
       role: users.role,
       isActive: users.isActive,
-
-      // ✅ add it to the session user payload
       lastSeenAt: users.lastSeenAt,
     })
     .from(users)
@@ -63,24 +72,20 @@ async function sessionAuth(request) {
 
   const user = userRows[0];
   if (!user || user.isActive === false) {
+    request.session = null;
     request.user = null;
     return;
   }
 
-  // ✅ update lastSeenAt (simple + reliable)
-  // We do it AFTER we confirm session + user.
-  // If you want less DB writes later, we can throttle it.
   try {
     await db
       .update(users)
       .set({ lastSeenAt: now })
       .where(eq(users.id, user.id));
   } catch (e) {
-    // Do not block the request if this fails
     request.log?.error?.(e);
   }
 
-  // Load location details (name + code)
   const locRows = await db
     .select({
       id: locations.id,
@@ -92,10 +97,25 @@ async function sessionAuth(request) {
 
   const loc = locRows[0] || null;
 
+  request.session = {
+    id: session.id,
+    userId: session.userId,
+    expiresAt: session.expiresAt,
+    actingAsRole: session.actingAsRole ?? null,
+    coverageReason: session.coverageReason ?? null,
+    coverageNote: session.coverageNote ?? null,
+    coverageStartedAt: session.coverageStartedAt ?? null,
+    createdAt: session.createdAt ?? null,
+  };
+
   request.user = {
     ...user,
-    lastSeenAt: now.toISOString(), // ✅ set to "now" for this request
+    lastSeenAt: now.toISOString(),
     location: loc,
+    actingAsRole: session.actingAsRole ?? null,
+    coverageReason: session.coverageReason ?? null,
+    coverageNote: session.coverageNote ?? null,
+    coverageStartedAt: session.coverageStartedAt ?? null,
   };
 }
 

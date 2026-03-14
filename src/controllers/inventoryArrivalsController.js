@@ -44,6 +44,7 @@ async function createInventoryArrival(request, reply) {
 
   try {
     const out = await inventoryArrivalsService.createInventoryArrival({
+      request,
       actorUser: request.user,
       locationId: effectiveLocationId,
       supplierId: parsed.data.supplierId,

@@ -1,26 +1,24 @@
-// backend/src/services/paymentService.js
-
 const { db } = require("../config/db");
 const { payments } = require("../db/schema/payments.schema");
 const { sales } = require("../db/schema/sales.schema");
-const { auditLogs } = require("../db/schema/audit_logs.schema");
 const { cashLedger } = require("../db/schema/cash_ledger.schema");
 const { eq, and } = require("drizzle-orm");
 const { sql } = require("drizzle-orm");
+const { logAudit } = require("./auditService");
 
 async function recordPayment({
+  request,
   locationId,
   cashierId,
   saleId,
   amount,
   method,
   note,
-  cashSessionId, // optional
+  cashSessionId,
 }) {
   const cleanMethod = String(method || "CASH").toUpperCase();
 
   return db.transaction(async (tx) => {
-    // 1) Load sale
     const [sale] = await tx
       .select()
       .from(sales)
@@ -32,21 +30,18 @@ async function recordPayment({
       throw err;
     }
 
-    // 2) Status check
     if (!["AWAITING_PAYMENT_RECORD", "PENDING"].includes(String(sale.status))) {
       const err = new Error("Invalid sale status");
       err.code = "BAD_STATUS";
       throw err;
     }
 
-    // 3) Amount check (strict)
     if (Number(amount) !== Number(sale.totalAmount)) {
       const err = new Error("Amount mismatch");
       err.code = "BAD_AMOUNT";
       throw err;
     }
 
-    // 4) Resolve cash session ONLY for CASH
     let resolvedSessionId = cashSessionId ? Number(cashSessionId) : null;
 
     if (cleanMethod === "CASH") {
@@ -68,7 +63,6 @@ async function recordPayment({
         }
         resolvedSessionId = Number(autoRows[0].id);
       } else {
-        // Validate provided session is OPEN and belongs to cashier+location
         const sessionCheck = await tx.execute(sql`
           SELECT id
           FROM cash_sessions
@@ -86,11 +80,9 @@ async function recordPayment({
         }
       }
     } else {
-      // Non-cash methods: do NOT require a cash session
       resolvedSessionId = resolvedSessionId || null;
     }
 
-    // 5) Insert payment (race-safe with DB unique constraint + catch)
     try {
       await tx.insert(payments).values({
         locationId,
@@ -102,7 +94,6 @@ async function recordPayment({
         note: note || null,
       });
     } catch (e) {
-      // Postgres unique violation
       if (e && e.code === "23505") {
         const err = new Error("Duplicate payment");
         err.code = "DUPLICATE_PAYMENT";
@@ -111,8 +102,6 @@ async function recordPayment({
       throw e;
     }
 
-    // 6) Cash ledger entry
-    // Keep ledger for all methods, but cashSessionId will be null for non-cash
     await tx.insert(cashLedger).values({
       locationId,
       cashierId,
@@ -125,22 +114,27 @@ async function recordPayment({
       note: "Sale payment recorded",
     });
 
-    // 7) Complete sale
     const [updatedSale] = await tx
       .update(sales)
       .set({ status: "COMPLETED", updatedAt: new Date() })
       .where(eq(sales.id, saleId))
       .returning();
 
-    // 8) Audit log
-    await tx.insert(auditLogs).values({
+    await logAudit({
+      request,
       locationId,
       userId: cashierId,
       action: "PAYMENT_RECORD",
       entity: "sale",
       entityId: saleId,
       description: `Payment recorded for sale #${saleId}`,
-      meta: null,
+      meta: {
+        saleId: Number(saleId),
+        amount: Number(amount || 0),
+        method: cleanMethod,
+        cashSessionId: resolvedSessionId,
+        note: note || null,
+      },
     });
 
     return updatedSale;

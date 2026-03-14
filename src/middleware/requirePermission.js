@@ -1,26 +1,31 @@
-// backend/middleware/requirePermission.js
 const { can } = require("../permissions/policy");
 
 function normalizeRole(role) {
   return String(role || "")
     .trim()
-    .toLowerCase();
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
 }
 
 function requirePermission(action) {
   return async function (request, reply) {
-    // If not authenticated
     if (!request.user) {
       return reply.status(401).send({ error: "Unauthorized" });
     }
 
-    const role = normalizeRole(request.user.role);
+    const realRole = normalizeRole(request.user.role);
+    const actingAsRole = normalizeRole(request.user.actingAsRole);
 
-    if (!can(role, action)) {
+    const allowedByRealRole = can(realRole, action);
+    const allowedByCoverageRole =
+      !!actingAsRole && actingAsRole !== realRole && can(actingAsRole, action);
+
+    if (!allowedByRealRole && !allowedByCoverageRole) {
       return reply.status(403).send({
         error: "Forbidden",
         debug: {
-          role,
+          realRole,
+          actingAsRole: actingAsRole || null,
           required: action,
         },
       });
@@ -28,23 +33,26 @@ function requirePermission(action) {
   };
 }
 
-// Optional helper (useful later)
 function requireAnyPermission(actions = []) {
   return async function (request, reply) {
     if (!request.user) {
       return reply.status(401).send({ error: "Unauthorized" });
     }
 
-    const role = normalizeRole(request.user.role);
+    const realRole = normalizeRole(request.user.role);
+    const actingAsRole = normalizeRole(request.user.actingAsRole);
 
-    for (const a of actions) {
-      if (can(role, a)) return;
-    }
+    const ok = actions.some(
+      (a) => can(realRole, a) || (!!actingAsRole && can(actingAsRole, a)),
+    );
+
+    if (ok) return;
 
     return reply.status(403).send({
       error: "Forbidden",
       debug: {
-        role,
+        realRole,
+        actingAsRole: actingAsRole || null,
         requiredAnyOf: actions,
       },
     });

@@ -1,5 +1,3 @@
-// backend/src/services/auditService.js
-
 const { db } = require("../config/db");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
 const { users } = require("../db/schema/users.schema");
@@ -8,21 +6,6 @@ const ROLES = require("../permissions/roles");
 
 function isOwner(user) {
   return user?.role === ROLES.OWNER;
-}
-
-function mapAuditRow(r) {
-  return {
-    id: r.id,
-    locationId: r.locationId ?? r.location_id ?? null, // ✅ include for UI "Place"
-    userId: r.userId ?? r.user_id ?? null,
-    userEmail: r.userEmail ?? r.user_email ?? null,
-    action: r.action,
-    entity: r.entity,
-    entityId: r.entityId ?? r.entity_id ?? null,
-    description: r.description ?? null,
-    meta: r.meta ?? null,
-    createdAt: r.createdAt ?? r.created_at ?? null,
-  };
 }
 
 function toIntOrNull(v) {
@@ -34,49 +17,93 @@ function toIntOrNull(v) {
 function toDateOrNull(v) {
   if (!v) return null;
   if (v instanceof Date && !Number.isNaN(v.getTime())) return v;
-
-  // allow "YYYY-MM-DD" or ISO strings
   const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return null;
-  return d;
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/**
- * Insert one audit log row.
- * DB requires: location_id (NOT NULL), user_id (NOT NULL), entity_id (NOT NULL), description (NOT NULL)
- */
+function cleanObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
+function buildCoverageMetaFromRequest(request) {
+  const user = request?.user || null;
+  if (!user?.actingAsRole) return {};
+
+  return {
+    actingAsRole: user.actingAsRole || null,
+    coverageReason: user.coverageReason || null,
+    coverageStartedAt: user.coverageStartedAt || null,
+    coverageNote: user.coverageNote || null,
+  };
+}
+
+function mapAuditRow(r) {
+  const meta =
+    r?.meta && typeof r.meta === "object" && !Array.isArray(r.meta)
+      ? r.meta
+      : null;
+
+  const coverage = meta?.actingAsRole
+    ? {
+        actingAsRole: meta.actingAsRole || null,
+        reason: meta.coverageReason || null,
+        startedAt: meta.coverageStartedAt || null,
+        note: meta.coverageNote || null,
+      }
+    : null;
+
+  return {
+    id: r.id,
+    locationId: r.locationId ?? null,
+    userId: r.userId ?? null,
+    userEmail: r.userEmail ?? null,
+    action: r.action,
+    entity: r.entity,
+    entityId: r.entityId ?? null,
+    description: r.description ?? null,
+    meta,
+    coverage,
+    createdAt: r.createdAt ?? null,
+  };
+}
+
 async function logAudit({
-  locationId,
-  userId,
+  locationId = null,
+  userId = null,
   action,
   entity,
-  entityId,
+  entityId = null,
   description = "",
   meta = null,
+  request = null,
 }) {
   const loc = toIntOrNull(locationId);
   const uid = toIntOrNull(userId);
   const eid = toIntOrNull(entityId);
 
-  if (loc == null) {
-    const err = new Error("AUDIT: locationId is required");
-    err.code = "AUDIT_LOCATION_REQUIRED";
-    throw err;
-  }
-  if (uid == null) {
-    const err = new Error("AUDIT: userId is required");
-    err.code = "AUDIT_USER_REQUIRED";
-    throw err;
-  }
-  if (!action || !entity || eid == null) {
-    const err = new Error("AUDIT: action/entity/entityId are required");
-    err.code = "AUDIT_FIELDS_REQUIRED";
+  if (!action || !String(action).trim()) {
+    const err = new Error("AUDIT: action is required");
+    err.code = "AUDIT_ACTION_REQUIRED";
     throw err;
   }
 
-  // meta is jsonb in schema: keep objects as objects.
-  // If caller passes a string, keep it as string.
-  const metaValue = meta === undefined ? null : meta;
+  if (!entity || !String(entity).trim()) {
+    const err = new Error("AUDIT: entity is required");
+    err.code = "AUDIT_ENTITY_REQUIRED";
+    throw err;
+  }
+
+  const baseMeta = cleanObject(meta);
+  const coverageMeta = buildCoverageMetaFromRequest(request);
+  const finalMeta = {
+    ...baseMeta,
+    ...coverageMeta,
+  };
 
   await db.insert(auditLogs).values({
     locationId: loc,
@@ -84,50 +111,33 @@ async function logAudit({
     action: String(action),
     entity: String(entity),
     entityId: eid,
-    description: String(description || ""), // description is NOT NULL in your schema
-    meta: metaValue,
+    description: String(description || ""),
+    meta: Object.keys(finalMeta).length ? finalMeta : null,
   });
 }
 
-/**
- * Non-blocking audit logging (recommended for inventory/sales/payments)
- */
 async function safeLogAudit(payload) {
   try {
     await logAudit(payload || {});
   } catch (err) {
-    // eslint-disable-next-line no-console
     console.error("AUDIT_LOG_FAILED:", err?.code || err?.message || err);
   }
 }
 
-/**
- * GET /audit listing
- *
- * ✅ Owner: can see all locations (whole company/system)
- * ✅ Non-owner (admin/manager/...): sees logs for their location only (store/branch wide)
- */
 async function listAuditLogs({ adminUser, filters }) {
   const limit = Math.max(1, Math.min(200, Number(filters?.limit || 50)));
-
   const cursorId = toIntOrNull(filters?.cursor);
-
   const action = filters?.action ? String(filters.action) : null;
   const entity = filters?.entity ? String(filters.entity) : null;
-
   const entityId = toIntOrNull(filters?.entityId);
   const userId = toIntOrNull(filters?.userId);
-
   const from = toDateOrNull(filters?.from);
   const to = toDateOrNull(filters?.to);
-
   const q = filters?.q ? String(filters.q).trim() : null;
 
   const conds = [];
 
-  // ✅ Scope rules
   if (!isOwner(adminUser)) {
-    // Store/branch-wide audit
     conds.push(eq(auditLogs.locationId, Number(adminUser.locationId)));
   }
 
@@ -162,7 +172,8 @@ async function listAuditLogs({ adminUser, filters }) {
     .limit(limit);
 
   const mapped = rows.map(mapAuditRow);
-  const nextCursor = mapped.length === limit ? mapped[mapped.length - 1].id : null;
+  const nextCursor =
+    mapped.length === limit ? mapped[mapped.length - 1].id : null;
 
   return { rows: mapped, nextCursor };
 }

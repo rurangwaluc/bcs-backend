@@ -1,4 +1,3 @@
-// backend/src/controllers/paymentsController.js
 const { recordPaymentSchema } = require("../validators/payments.schema");
 const paymentService = require("../services/paymentService");
 
@@ -13,34 +12,37 @@ async function recordPayment(request, reply) {
 
   try {
     const sale = await paymentService.recordPayment({
+      request,
       locationId: request.user.locationId,
       cashierId: request.user.id,
-
       saleId: parsed.data.saleId,
       amount: parsed.data.amount,
       method: String(parsed.data.method || "CASH").toUpperCase(),
       note: parsed.data.note,
-
-      // ✅ optional now (service resolves open session automatically)
       cashSessionId: parsed.data.cashSessionId,
     });
 
     return reply.send({ ok: true, sale });
   } catch (e) {
-    if (e.code === "NOT_FOUND")
+    if (e.code === "NOT_FOUND") {
       return reply.status(404).send({ error: "Sale not found" });
+    }
 
-    if (e.code === "BAD_STATUS")
+    if (e.code === "BAD_STATUS") {
       return reply.status(409).send({ error: "Invalid sale status" });
+    }
 
-    if (e.code === "BAD_AMOUNT")
+    if (e.code === "BAD_AMOUNT") {
       return reply.status(409).send({ error: "Amount must equal sale total" });
+    }
 
-    if (e.code === "DUPLICATE_PAYMENT")
+    if (e.code === "DUPLICATE_PAYMENT") {
       return reply.status(409).send({ error: "Payment already recorded" });
+    }
 
-    if (e.code === "NO_OPEN_SESSION")
+    if (e.code === "NO_OPEN_SESSION") {
       return reply.status(409).send({ error: "No open cash session" });
+    }
 
     request.log.error(e);
     return reply.status(500).send({ error: "Internal Server Error" });

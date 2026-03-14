@@ -224,6 +224,7 @@ function mapArrivalRow(row) {
 }
 
 async function createInventoryArrival({
+  request,
   actorUser,
   locationId,
   supplierId,
@@ -322,6 +323,7 @@ async function createInventoryArrival({
     }
 
     await safeLogAudit({
+      request,
       locationId: Number(locationId),
       userId: Number(actorUser.id),
       action: "INVENTORY_ARRIVAL_CREATE",
@@ -335,6 +337,10 @@ async function createInventoryArrival({
         documentNo: cleanText(documentNo, 120),
         totalAmount,
         itemsCount: lines.length,
+        totalStockQtyReceived: lines.reduce(
+          (sum, line) => sum + Number(line.stockQtyReceived || 0),
+          0,
+        ),
       },
     });
 

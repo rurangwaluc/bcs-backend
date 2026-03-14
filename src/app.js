@@ -6,7 +6,6 @@ const multipart = require("@fastify/multipart");
 
 const { env } = require("./config/env");
 const { sessionAuth } = require("./middleware/sessionAuth");
-const { touchLastSeen } = require("./middleware/touchLastSeen");
 
 // Routes
 const { bootstrapRoutes } = require("./routes/bootstrap.routes");
@@ -83,6 +82,8 @@ const { uploadsRoutes } = require("./routes/uploads.routes");
 const { suppliersRoutes } = require("./routes/suppliers.routes");
 const { supplierBillsRoutes } = require("./routes/supplierBills.routes");
 
+const { adminCoverageRoutes } = require("./routes/adminCoverage.routes");
+
 function buildApp() {
   const app = fastify({ logger: true });
 
@@ -121,7 +122,6 @@ function buildApp() {
   app.register(rateLimit, { global: false });
 
   app.addHook("preHandler", sessionAuth);
-  app.addHook("preHandler", touchLastSeen);
 
   app.get("/health", async () => ({
     status: "ok",
@@ -189,6 +189,7 @@ function buildApp() {
 
   app.register(suppliersRoutes);
   app.register(supplierBillsRoutes);
+  app.register(adminCoverageRoutes);
 
   app.setErrorHandler((error, request, reply) => {
     request.log.error(error);

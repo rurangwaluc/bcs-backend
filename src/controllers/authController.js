@@ -52,74 +52,77 @@ function sidCookieOptions(expiresAt) {
   return opts;
 }
 
-// ✅ helper: always return user with location object + lastSeenAt
+// SAFE VERSION:
+// flat select only, then shape response in JS.
+// This avoids Drizzle nested-select shape failures.
 async function buildUserWithLocation(userId) {
   const rows = await db
     .select({
-      id: users.id,
-      name: users.name,
-      email: users.email,
-      role: users.role,
-      isActive: users.isActive,
-      lastSeenAt: users.lastSeenAt,
-      location: {
-        id: locations.id,
-        name: locations.name,
-        code: locations.code,
-        email: locations.email,
-        address: locations.address,
-        tin: locations.tin,
-        momoCode: locations.momoCode,
-        bankAccounts: locations.bankAccounts,
-      },
+      userId: users.id,
+      userName: users.name,
+      userEmail: users.email,
+      userRole: users.role,
+      userIsActive: users.isActive,
+      userLastSeenAt: users.lastSeenAt,
+
+      locationId: locations.id,
+      locationName: locations.name,
+      locationCode: locations.code,
+      locationEmail: locations.email,
+      locationAddress: locations.address,
+      locationTin: locations.tin,
+      locationMomoCode: locations.momoCode,
+      locationBankAccounts: locations.bankAccounts,
     })
     .from(users)
     .leftJoin(locations, eq(locations.id, users.locationId))
-    .where(eq(users.id, userId));
+    .where(eq(users.id, Number(userId)));
 
   const u = rows[0];
   if (!u) return null;
 
-  const loc = u.location?.id
-    ? u.location
-    : { id: null, name: null, code: null };
+  const bankAccounts = Array.isArray(u.locationBankAccounts)
+    ? u.locationBankAccounts
+    : [];
 
   return {
-    id: String(u.id),
-    name: u.name,
-    email: u.email,
-    role: u.role,
-    isActive: u.isActive,
-    lastSeenAt: u.lastSeenAt ? new Date(u.lastSeenAt).toISOString() : null,
+    id: String(u.userId),
+    name: u.userName,
+    email: u.userEmail,
+    role: u.userRole,
+    isActive: u.userIsActive,
+    lastSeenAt: u.userLastSeenAt
+      ? new Date(u.userLastSeenAt).toISOString()
+      : null,
     location: {
-      id: loc.id != null ? String(loc.id) : null,
-      name: loc.name || null,
-      code: loc.code || null,
-      email: loc.email || null,
-      address: loc.address || null,
-      tin: loc.tin || null,
-      momoCode: loc.momoCode || null,
-      bankAccounts: Array.isArray(loc.bankAccounts) ? loc.bankAccounts : [],
+      id: u.locationId != null ? String(u.locationId) : null,
+      name: u.locationName || null,
+      code: u.locationCode || null,
+      email: u.locationEmail || null,
+      address: u.locationAddress || null,
+      tin: u.locationTin || null,
+      momoCode: u.locationMomoCode || null,
+      bankAccounts,
     },
     business: {
-      name: loc.name || null,
-      email: loc.email || null,
-      address: loc.address || null,
-      tin: loc.tin || null,
-      momoCode: loc.momoCode || null,
-      bankAccounts: Array.isArray(loc.bankAccounts) ? loc.bankAccounts : [],
+      name: u.locationName || null,
+      email: u.locationEmail || null,
+      address: u.locationAddress || null,
+      tin: u.locationTin || null,
+      momoCode: u.locationMomoCode || null,
+      bankAccounts,
     },
   };
 }
 
-// ✅ small helper: update lastSeenAt, never break auth
+// keep this helper for login only
 async function touchLastSeen(userId, request) {
   try {
     if (!userId) return;
     await db
       .update(users)
       .set({ lastSeenAt: new Date() })
-      .where(eq(users.id, userId));
+      .where(eq(users.id, Number(userId)));
   } catch (e) {
     request?.log?.warn?.(e);
   }
@@ -149,19 +152,21 @@ async function login(request, reply) {
       entityId: null,
       description: `Failed login for ${em}`,
     });
+
     return reply.status(401).send({ error: "Invalid credentials" });
   }
 
   const ok = verifyPassword(pw, user.passwordHash);
   if (!ok) {
     await safeLogAudit({
-      locationId: user.locationId,
-      userId: user.id,
+      locationId: user.locationId ?? null,
+      userId: user.id ?? null,
       action: AUDIT.LOGIN_FAILED,
       entity: "auth",
-      entityId: user.id,
+      entityId: user.id ?? null,
       description: `Failed login for ${em}`,
     });
+
     return reply.status(401).send({ error: "Invalid credentials" });
   }
 
@@ -176,8 +181,8 @@ async function login(request, reply) {
   });
 
   await safeLogAudit({
-    locationId: user.locationId,
-    userId: user.id,
+    locationId: user.locationId ?? null,
+    userId: user.id ?? null,
     action: AUDIT.LOGIN_SUCCESS,
     entity: "session",
     entityId: null,
@@ -186,7 +191,7 @@ async function login(request, reply) {
 
   reply.setCookie("sid", sessionTokenRaw, sidCookieOptions(expiresAt));
 
-  // ✅ mark active now
+  // keep this on login so the login response reflects activity immediately
   await touchLastSeen(user.id, request);
 
   const userOut = await buildUserWithLocation(user.id);
@@ -202,11 +207,13 @@ async function me(request, reply) {
     return reply.status(401).send({ error: "Unauthorized" });
   }
 
-  // ✅ update lastSeenAt on every /auth/me
-  await touchLastSeen(Number(request.user.id), request);
-
+  // IMPORTANT:
+  // do NOT touch lastSeenAt here anymore.
+  // sessionAuth already updates it for authenticated requests.
   const userOut = await buildUserWithLocation(Number(request.user.id));
-  if (!userOut) return reply.status(401).send({ error: "Unauthorized" });
+  if (!userOut) {
+    return reply.status(401).send({ error: "Unauthorized" });
+  }
 
   return reply.send({ ok: true, user: userOut });
 }

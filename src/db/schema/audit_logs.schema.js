@@ -1,4 +1,3 @@
-// backend/src/db/schema/audit_logs.schema.js
 const {
   pgTable,
   serial,
@@ -11,19 +10,13 @@ const {
 
 const auditLogs = pgTable("audit_logs", {
   id: serial("id").primaryKey(),
-
-  // ✅ REQUIRED by DB (your error proves it's NOT NULL)
-  locationId: integer("location_id").notNull(),
-
-  userId: integer("user_id").notNull(),
-
+  locationId: integer("location_id"),
+  userId: integer("user_id"),
   action: varchar("action", { length: 80 }).notNull(),
   entity: varchar("entity", { length: 50 }).notNull(),
-  entityId: integer("entity_id").notNull(),
-
+  entityId: integer("entity_id"),
   description: text("description").notNull(),
-
-  meta: jsonb("meta"), // optional
+  meta: jsonb("meta"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
