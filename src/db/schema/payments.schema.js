@@ -1,4 +1,3 @@
-// backend/src/db/schema/payments.schema.js
 const {
   pgTable,
   serial,
@@ -18,16 +17,20 @@ const payments = pgTable(
     saleId: integer("sale_id").notNull(),
     cashierId: integer("cashier_id").notNull(),
 
-    // ✅ NEW: nullable for now (migration data exists with NULL)
+    // normal checkout payments may be linked to an open cash session
     cashSessionId: integer("cash_session_id"),
 
     amount: integer("amount").notNull(),
-    method: varchar("method", { length: 30 }).default("CASH"),
+
+    // CASH / MOMO / CARD / BANK / OTHER
+    method: varchar("method", { length: 30 }).notNull().default("CASH"),
+
     note: text("note"),
 
-    createdAt: timestamp("created_at").defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (t) => ({
+    // one direct checkout payment row per sale
     uniqSale: uniqueIndex("payments_sale_unique").on(t.saleId),
   }),
 );

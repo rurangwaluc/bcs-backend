@@ -13,10 +13,10 @@ const cashLedger = pgTable("cash_ledger", {
   locationId: integer("location_id").notNull(),
   cashierId: integer("cashier_id").notNull(),
 
-  // Optional link to a cash session (recommended for CASH movements)
+  // optional link to open cashier session
   cashSessionId: integer("cash_session_id"),
 
-  // SALE_PAYMENT, PETTY_CASH_IN, PETTY_CASH_OUT, VERSEMENT, OPENING_BALANCE, REFUND, etc
+  // SALE_PAYMENT, CREDIT_PAYMENT, PETTY_CASH_IN, PETTY_CASH_OUT, VERSEMENT, OPENING_BALANCE, REFUND, etc
   type: varchar("type", { length: 40 }).notNull(),
 
   // IN / OUT
@@ -25,17 +25,21 @@ const cashLedger = pgTable("cash_ledger", {
   amount: integer("amount").notNull(),
 
   // CASH / MOMO / CARD / BANK / OTHER
-  method: varchar("method", { length: 20 }).default("CASH"),
+  method: varchar("method", { length: 20 }).notNull().default("CASH"),
 
-  // Optional external reference (e.g. MoMo TXN ID, bank ref)
+  // optional external reference (MoMo TXN ID, bank ref, etc)
   reference: varchar("reference", { length: 120 }),
 
   saleId: integer("sale_id"),
   paymentId: integer("payment_id"),
 
+  // ✅ new for credit collection traceability
+  creditId: integer("credit_id"),
+  creditPaymentId: integer("credit_payment_id"),
+
   note: text("note"),
 
-  createdAt: timestamp("created_at").defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
 module.exports = { cashLedger };

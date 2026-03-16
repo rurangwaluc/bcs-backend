@@ -1,9 +1,9 @@
-// backend/src/controllers/creditController.js
+"use strict";
 
 const {
   createCreditSchema,
-  approveCreditSchema, // this must validate { decision, note? }
-  settleCreditSchema, // this must validate { method, note?, cashSessionId? }
+  approveCreditSchema,
+  recordCreditPaymentSchema,
 } = require("../validators/credit.schema");
 
 const creditService = require("../services/creditService");
@@ -16,8 +16,14 @@ function toInt(v, def = null) {
 
 /**
  * POST /credits
- * Seller creates credit request from a sale.
- * Body: { saleId, note? }
+ * Body:
+ * {
+ *   saleId,
+ *   creditMode?,
+ *   dueDate?,
+ *   note?,
+ *   installments?
+ * }
  */
 async function createCredit(request, reply) {
   const parsed = createCreditSchema.safeParse(request.body || {});
@@ -33,30 +39,60 @@ async function createCredit(request, reply) {
       locationId: request.user.locationId,
       sellerId: request.user.id,
       saleId: parsed.data.saleId,
+      creditMode: parsed.data.creditMode,
+      dueDate: parsed.data.dueDate,
       note: parsed.data.note,
+      installments: parsed.data.installments,
     });
 
     return reply.send({ ok: true, credit });
   } catch (e) {
     request.log.error({ err: e }, "createCredit failed");
 
-    if (e.code === "SALE_NOT_FOUND")
-      return reply.status(404).send({ error: "Sale not found" });
+    if (e.code === "BAD_SALE_ID") {
+      return reply.status(400).send({ error: "Invalid sale id" });
+    }
 
-    if (e.code === "BAD_STATUS")
+    if (e.code === "SALE_NOT_FOUND") {
+      return reply.status(404).send({ error: "Sale not found" });
+    }
+
+    if (e.code === "BAD_STATUS") {
       return reply.status(409).send({
         error: e.message || "Sale cannot create credit from current status",
         debug: e.debug,
       });
+    }
 
-    if (e.code === "MISSING_CUSTOMER")
+    if (e.code === "MISSING_CUSTOMER") {
       return reply.status(409).send({ error: e.message });
+    }
 
-    if (e.code === "DUPLICATE_CREDIT")
-      return reply.status(409).send({ error: e.message });
+    if (e.code === "CUSTOMER_NOT_FOUND") {
+      return reply.status(404).send({
+        error: "Customer not found for this sale",
+        debug: e.debug,
+      });
+    }
 
-    if (e.code === "DUPLICATE_PAYMENT")
+    if (
+      e.code === "BAD_INSTALLMENTS" ||
+      e.code === "INSTALLMENT_SUM_MISMATCH" ||
+      e.code === "BAD_CREDIT_MODE"
+    ) {
+      return reply.status(400).send({
+        error: e.message || "Invalid installment plan",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "DUPLICATE_CREDIT") {
       return reply.status(409).send({ error: e.message });
+    }
+
+    if (e.code === "DUPLICATE_PAYMENT") {
+      return reply.status(409).send({ error: e.message });
+    }
 
     return reply.status(500).send({
       error: "Internal Server Error",
@@ -67,12 +103,13 @@ async function createCredit(request, reply) {
 
 /**
  * PATCH /credits/:id/decision
- * Manager/Admin approves or rejects.
- * Body: { decision: "APPROVE"|"REJECT", note? }
+ * Body: { decision: "APPROVE" | "REJECT", note? }
  */
 async function approveCredit(request, reply) {
   const creditId = toInt(request.params.id, null);
-  if (!creditId) return reply.status(400).send({ error: "Invalid credit id" });
+  if (!creditId) {
+    return reply.status(400).send({ error: "Invalid credit id" });
+  }
 
   const parsed = approveCreditSchema.safeParse(request.body || {});
   if (!parsed.success) {
@@ -95,11 +132,27 @@ async function approveCredit(request, reply) {
   } catch (e) {
     request.log.error({ err: e }, "approveCredit failed");
 
-    if (e.code === "NOT_FOUND")
-      return reply.status(404).send({ error: "Credit not found" });
+    if (e.code === "BAD_CREDIT_ID") {
+      return reply.status(400).send({ error: "Invalid credit id" });
+    }
 
-    if (e.code === "BAD_STATUS")
-      return reply.status(409).send({ error: e.message, debug: e.debug });
+    if (e.code === "BAD_DECISION") {
+      return reply.status(400).send({
+        error: e.message || "Invalid decision",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "NOT_FOUND") {
+      return reply.status(404).send({ error: "Credit not found" });
+    }
+
+    if (e.code === "BAD_STATUS") {
+      return reply.status(409).send({
+        error: e.message || "Credit cannot be processed from current status",
+        debug: e.debug,
+      });
+    }
 
     return reply.status(500).send({
       error: "Internal Server Error",
@@ -109,15 +162,16 @@ async function approveCredit(request, reply) {
 }
 
 /**
- * PATCH /credits/:id/settle
- * Cashier/Admin settles an APPROVED credit.
- * Body: { method, note?, cashSessionId? }
+ * PATCH /credits/:id/payment
+ * Body: { amount, method, note?, cashSessionId?, reference? }
  */
-async function settleCredit(request, reply) {
+async function recordCreditPayment(request, reply) {
   const creditId = toInt(request.params.id, null);
-  if (!creditId) return reply.status(400).send({ error: "Invalid credit id" });
+  if (!creditId) {
+    return reply.status(400).send({ error: "Invalid credit id" });
+  }
 
-  const parsed = settleCreditSchema.safeParse(request.body || {});
+  const parsed = recordCreditPaymentSchema.safeParse(request.body || {});
   if (!parsed.success) {
     return reply.status(400).send({
       error: "Invalid payload",
@@ -126,27 +180,55 @@ async function settleCredit(request, reply) {
   }
 
   try {
-    const out = await creditService.settleCredit({
+    const out = await creditService.recordCreditPayment({
       locationId: request.user.locationId,
       cashierId: request.user.id,
       creditId,
+      amount: parsed.data.amount,
       method: parsed.data.method,
       note: parsed.data.note,
+      reference: parsed.data.reference,
       cashSessionId: parsed.data.cashSessionId,
     });
 
     return reply.send({ ok: true, ...out });
   } catch (e) {
-    request.log.error({ err: e }, "settleCredit failed");
+    request.log.error({ err: e }, "recordCreditPayment failed");
 
-    if (e.code === "NOT_FOUND")
+    if (e.code === "BAD_CREDIT_ID") {
+      return reply.status(400).send({ error: "Invalid credit id" });
+    }
+
+    if (e.code === "BAD_AMOUNT") {
+      return reply.status(400).send({
+        error: e.message || "Invalid amount",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "NOT_FOUND") {
       return reply.status(404).send({ error: "Credit not found" });
+    }
 
-    if (e.code === "NOT_APPROVED")
-      return reply.status(409).send({ error: e.message, debug: e.debug });
+    if (e.code === "BAD_STATUS" || e.code === "NOT_APPROVED") {
+      return reply.status(409).send({
+        error: e.message || "Credit is not collectible",
+        debug: e.debug,
+      });
+    }
 
-    if (e.code === "DUPLICATE_PAYMENT")
-      return reply.status(409).send({ error: e.message });
+    if (e.code === "OVERPAYMENT") {
+      return reply.status(409).send({
+        error: e.message || "Payment exceeds remaining balance",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "NO_OPEN_SESSION") {
+      return reply.status(409).send({
+        error: "No open cash session",
+      });
+    }
 
     return reply.status(500).send({
       error: "Internal Server Error",
@@ -155,4 +237,11 @@ async function settleCredit(request, reply) {
   }
 }
 
-module.exports = { createCredit, approveCredit, settleCredit };
+const settleCredit = recordCreditPayment;
+
+module.exports = {
+  createCredit,
+  approveCredit,
+  recordCreditPayment,
+  settleCredit,
+};

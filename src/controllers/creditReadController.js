@@ -1,4 +1,3 @@
-// backend/src/controllers/creditReadController.js
 "use strict";
 
 const creditReadService = require("../services/creditReadService");
@@ -28,10 +27,10 @@ async function listCredits(request, reply) {
 
 /**
  * GET /credits/:id
- * Now returns { ok: true, credit: { ... , items: [], payments: [] } }
  */
 async function getCredit(request, reply) {
   const creditId = Number(request.params.id);
+
   if (!Number.isInteger(creditId) || creditId <= 0) {
     return reply.status(400).send({ error: "Invalid credit id" });
   }
@@ -42,7 +41,9 @@ async function getCredit(request, reply) {
       creditId,
     });
 
-    if (!credit) return reply.status(404).send({ error: "Credit not found" });
+    if (!credit) {
+      return reply.status(404).send({ error: "Credit not found" });
+    }
 
     return reply.send({ ok: true, credit });
   } catch (e) {
@@ -70,4 +71,8 @@ async function listOpenCredits(request, reply) {
   }
 }
 
-module.exports = { listCredits, getCredit, listOpenCredits };
+module.exports = {
+  listCredits,
+  getCredit,
+  listOpenCredits,
+};

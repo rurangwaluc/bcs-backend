@@ -12,7 +12,6 @@ async function getSale(request, reply) {
 
   if (!sale) return reply.status(404).send({ error: "Sale not found" });
 
-  // Seller can only view own sale
   if (request.user.role === ROLES.SELLER && sale.sellerId !== request.user.id) {
     return reply.status(403).send({ error: "Forbidden" });
   }
@@ -27,10 +26,9 @@ async function listSales(request, reply) {
     q: request.query.q || null,
     dateFrom: request.query.dateFrom || null,
     dateTo: request.query.dateTo || null,
-    limit: request.query.limit || 50,
+    limit: request.query.limit || 200,
   };
 
-  // Seller restricted to own
   if (request.user.role === ROLES.SELLER) {
     filters.sellerId = request.user.id;
   }

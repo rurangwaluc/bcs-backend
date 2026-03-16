@@ -1,4 +1,3 @@
-// backend/src/controllers/salesController.js
 "use strict";
 
 const {
@@ -48,7 +47,6 @@ async function createSale(request, reply) {
 
     return reply.send({ ok: true, sale });
   } catch (e) {
-    // ---------- customer ----------
     if (e.code === "CUSTOMER_NOT_FOUND") {
       return reply.status(404).send({
         error: "Customer not found",
@@ -70,7 +68,6 @@ async function createSale(request, reply) {
       });
     }
 
-    // ---------- items/products ----------
     if (e.code === "NO_ITEMS") {
       return reply.status(400).send({ error: "No items" });
     }
@@ -199,19 +196,17 @@ async function markSale(request, reply) {
       userId: request.user.id,
       locationId: request.user.locationId,
       status: parsed.data.status,
-      paymentMethod: parsed.data.paymentMethod, // if status=PAID, service enforces allowed methods
+      paymentMethod: parsed.data.paymentMethod,
     });
 
     return reply.send({ ok: true, sale });
   } catch (e) {
     request.log.error({ err: e }, "markSale failed");
 
-    // Auth/ownership
     if (e.code === "FORBIDDEN") {
       return reply.status(403).send({ error: "Forbidden" });
     }
 
-    // Data/state
     if (e.code === "NOT_FOUND") {
       return reply.status(404).send({ error: "Sale not found" });
     }
@@ -238,7 +233,19 @@ async function markSale(request, reply) {
       return reply.status(400).send({ error: "Invalid user" });
     }
 
-    // Fallback
+    if (e.code === "USE_CREDIT_ENDPOINT") {
+      return reply.status(409).send({
+        error: "Use POST /credits to create a credit request",
+      });
+    }
+
+    if (e.code === "BAD_MARK_STATUS") {
+      return reply.status(400).send({
+        error: "Invalid sale mark status",
+        debug: e.debug,
+      });
+    }
+
     return reply.status(500).send({
       error: "Internal Server Error",
       debug: { code: e?.code },

@@ -1,39 +1,51 @@
-// backend/src/services/creditService.js
+"use strict";
 
 const { db } = require("../config/db");
-const notificationService = require("./notificationService");
-const { credits } = require("../db/schema/credits.schema");
-const { sales } = require("../db/schema/sales.schema");
-const { payments } = require("../db/schema/payments.schema");
-const { cashLedger } = require("../db/schema/cash_ledger.schema");
-const { customers } = require("../db/schema/customers.schema");
 const { eq, and } = require("drizzle-orm");
 const { sql } = require("drizzle-orm");
+
+const notificationService = require("./notificationService");
 const { logAudit } = require("./auditService");
 const AUDIT = require("../audit/actions");
 
-/**
- * ✅ Which sale statuses are allowed to become credit.
- * Put your real statuses here.
- *
- * If your sale becomes "PENDING" when seller chooses CREDIT,
- * then this is correct.
- */
-const ALLOWED_SALE_STATUSES_FOR_CREDIT = new Set([
-  "PENDING",
-  "AWAITING_PAYMENT_RECORD",
-]);
+const { credits } = require("../db/schema/credits.schema");
+const { sales } = require("../db/schema/sales.schema");
+const { customers } = require("../db/schema/customers.schema");
+const { cashLedger } = require("../db/schema/cash_ledger.schema");
+const { creditPayments } = require("../db/schema/credit_payments.schema");
+const {
+  creditInstallments,
+} = require("../db/schema/credit_installments.schema");
 
 function normMethod(v) {
-  const m = v == null ? "" : String(v);
-  const out = m.trim().toUpperCase();
+  const out = String(v == null ? "" : v)
+    .trim()
+    .toUpperCase();
   return out || "CASH";
+}
+
+function normCreditMode(v) {
+  const out = String(v == null ? "" : v)
+    .trim()
+    .toUpperCase();
+  return out || "OPEN_BALANCE";
 }
 
 function toNullableInt(v) {
   if (v === undefined || v === null || v === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? Math.round(n) : null;
+}
+
+function toPositiveInt(v, code = "BAD_AMOUNT") {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) {
+    const err = new Error("Amount must be greater than zero");
+    err.code = code;
+    err.debug = { value: v };
+    throw err;
+  }
+  return Math.round(n);
 }
 
 function toNote(v, max = 500) {
@@ -43,19 +55,161 @@ function toNote(v, max = 500) {
   return s.slice(0, max);
 }
 
-/**
- * Create credit request (PENDING).
- * ✅ Derives customerId from sale.
- * ✅ Blocks duplicates.
- * ✅ Blocks if payment already exists.
- */
-async function createCredit({ locationId, sellerId, saleId, note }) {
+function toDueDate(v) {
+  if (!v) return null;
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return null;
+  return d;
+}
+
+function isPendingStatus(status) {
+  const st = String(status || "").toUpperCase();
+  return st === "PENDING" || st === "PENDING_APPROVAL";
+}
+
+function isCollectibleStatus(status) {
+  const st = String(status || "").toUpperCase();
+  return st === "APPROVED" || st === "PARTIALLY_PAID";
+}
+
+function buildInstallments({
+  principalAmount,
+  firstDueDate,
+  installmentCount,
+  installmentAmount,
+}) {
+  const principal = Math.round(Number(principalAmount || 0));
+  const count = Math.round(Number(installmentCount || 0));
+  const fixedAmount = Math.round(Number(installmentAmount || 0));
+  const due = firstDueDate ? new Date(firstDueDate) : null;
+
+  if (!Number.isFinite(principal) || principal <= 0) {
+    const err = new Error("Invalid principal amount");
+    err.code = "BAD_INSTALLMENT_PLAN";
+    throw err;
+  }
+
+  if (!Number.isInteger(count) || count <= 0) {
+    const err = new Error("Installment count must be greater than zero");
+    err.code = "BAD_INSTALLMENT_PLAN";
+    err.debug = { installmentCount };
+    throw err;
+  }
+
+  if (!Number.isInteger(fixedAmount) || fixedAmount <= 0) {
+    const err = new Error("Installment amount must be greater than zero");
+    err.code = "BAD_INSTALLMENT_PLAN";
+    err.debug = { installmentAmount };
+    throw err;
+  }
+
+  if (!due || Number.isNaN(due.getTime())) {
+    const err = new Error("First installment due date is required");
+    err.code = "BAD_INSTALLMENT_PLAN";
+    err.debug = { firstDueDate };
+    throw err;
+  }
+
+  const rows = [];
+  let remaining = principal;
+
+  for (let i = 0; i < count; i += 1) {
+    const installmentDue = new Date(due);
+    installmentDue.setMonth(installmentDue.getMonth() + i);
+
+    const amount =
+      i === count - 1 ? remaining : Math.min(fixedAmount, remaining);
+
+    if (amount <= 0) break;
+
+    rows.push({
+      sequenceNo: i + 1,
+      dueDate: installmentDue,
+      amount,
+    });
+
+    remaining -= amount;
+    if (remaining <= 0) break;
+  }
+
+  if (remaining > 0) {
+    const last = rows[rows.length - 1];
+    if (!last) {
+      const err = new Error("Failed to create installment schedule");
+      err.code = "BAD_INSTALLMENT_PLAN";
+      throw err;
+    }
+    last.amount += remaining;
+  }
+
+  return rows;
+}
+
+function buildCollectionMessage({
+  creditMode,
+  isFinal,
+  matchedInstallment,
+  paymentAmount,
+  remainingAmount,
+}) {
+  const mode = normCreditMode(creditMode);
+
+  if (mode === "INSTALLMENT_PLAN") {
+    if (isFinal) {
+      return {
+        label: "INSTALLMENT_FINAL",
+        message: `Final installment payment recorded. Remaining balance: ${remainingAmount}.`,
+      };
+    }
+
+    if (matchedInstallment) {
+      return {
+        label: "INSTALLMENT_PAYMENT",
+        message: `Installment payment recorded. Remaining balance: ${remainingAmount}.`,
+      };
+    }
+
+    return {
+      label: "INSTALLMENT_EXTRA_PAYMENT",
+      message: `Installment-plan payment recorded (${paymentAmount}). Remaining balance: ${remainingAmount}.`,
+    };
+  }
+
+  if (isFinal) {
+    return {
+      label: "OPEN_BALANCE_FINAL",
+      message: `Final open-balance payment recorded. Remaining balance: ${remainingAmount}.`,
+    };
+  }
+
+  return {
+    label: "OPEN_BALANCE_PARTIAL",
+    message: `Open-balance partial payment recorded. Remaining balance: ${remainingAmount}.`,
+  };
+}
+
+async function createCredit({
+  locationId,
+  sellerId,
+  saleId,
+  creditMode = "OPEN_BALANCE",
+  dueDate,
+  note,
+  installmentCount,
+  installmentAmount,
+  firstInstallmentDate,
+}) {
   const sid = Number(saleId);
   if (!Number.isInteger(sid) || sid <= 0) {
     const err = new Error("Invalid sale id");
     err.code = "BAD_SALE_ID";
     throw err;
   }
+
+  const mode = normCreditMode(creditMode);
+  const cleanNote = toNote(note);
+  const due = toDueDate(dueDate);
+  const now = new Date();
 
   return db.transaction(async (tx) => {
     const saleRows = await tx
@@ -71,13 +225,11 @@ async function createCredit({ locationId, sellerId, saleId, note }) {
     }
 
     const saleStatus = String(sale.status || "").toUpperCase();
-    if (!ALLOWED_SALE_STATUSES_FOR_CREDIT.has(saleStatus)) {
+    const allowed = ["FULFILLED", "AWAITING_PAYMENT_RECORD", "PENDING"];
+    if (!allowed.includes(saleStatus)) {
       const err = new Error("Sale cannot create credit from current status");
       err.code = "BAD_STATUS";
-      err.debug = {
-        saleStatus,
-        allowed: Array.from(ALLOWED_SALE_STATUSES_FOR_CREDIT),
-      };
+      err.debug = { saleStatus, allowed };
       throw err;
     }
 
@@ -87,7 +239,6 @@ async function createCredit({ locationId, sellerId, saleId, note }) {
       throw err;
     }
 
-    // ✅ Ensure customer exists (location-safe)
     const custRows = await tx
       .select({ id: customers.id })
       .from(customers)
@@ -105,33 +256,37 @@ async function createCredit({ locationId, sellerId, saleId, note }) {
       throw err;
     }
 
-    // ✅ prevent duplicate credit per sale (race-safe with unique index too)
-    const existing = await tx.execute(sql`
-      SELECT id FROM credits
-      WHERE sale_id = ${sid} AND location_id = ${locationId}
+    const existingCreditRes = await tx.execute(sql`
+      SELECT id
+      FROM credits
+      WHERE sale_id = ${sid}
+        AND location_id = ${locationId}
       LIMIT 1
     `);
-    const existingRows = existing.rows || existing;
-    if (existingRows.length > 0) {
+    const existingCreditRows =
+      existingCreditRes?.rows || existingCreditRes || [];
+    if (existingCreditRows.length > 0) {
       const err = new Error("Credit already exists for this sale");
       err.code = "DUPLICATE_CREDIT";
       throw err;
     }
 
-    // ✅ don’t allow credit if payment already recorded
-    const existingPay = await tx.execute(sql`
-      SELECT id FROM payments
-      WHERE sale_id = ${sid} AND location_id = ${locationId}
+    const existingPaymentRes = await tx.execute(sql`
+      SELECT id
+      FROM payments
+      WHERE sale_id = ${sid}
+        AND location_id = ${locationId}
       LIMIT 1
     `);
-    const payRows = existingPay.rows || existingPay;
-    if (payRows.length > 0) {
+    const existingPaymentRows =
+      existingPaymentRes?.rows || existingPaymentRes || [];
+    if (existingPaymentRows.length > 0) {
       const err = new Error("Payment already recorded for this sale");
       err.code = "DUPLICATE_PAYMENT";
       throw err;
     }
 
-    const now = new Date();
+    const principal = Number(sale.totalAmount || 0) || 0;
 
     const [created] = await tx
       .insert(credits)
@@ -139,15 +294,51 @@ async function createCredit({ locationId, sellerId, saleId, note }) {
         locationId,
         saleId: sid,
         customerId: sale.customerId,
-        amount: sale.totalAmount,
+        principalAmount: principal,
+        paidAmount: 0,
+        remainingAmount: principal,
+        creditMode: mode,
+        dueDate: due,
         status: "PENDING",
         createdBy: sellerId,
-        note: toNote(note),
+        note: cleanNote,
         createdAt: now,
       })
       .returning();
 
-    // ✅ FIX: include locationId (audit_logs.location_id is NOT NULL)
+    if (mode === "INSTALLMENT_PLAN") {
+      const planRows = buildInstallments({
+        principalAmount: principal,
+        firstDueDate: firstInstallmentDate || dueDate,
+        installmentCount,
+        installmentAmount,
+      });
+
+      for (const row of planRows) {
+        await tx.insert(creditInstallments).values({
+          locationId,
+          creditId: Number(created.id),
+          saleId: sid,
+          sequenceNo: row.sequenceNo,
+          dueDate: row.dueDate,
+          amount: row.amount,
+          paidAmount: 0,
+          status: "PENDING",
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+
+    await tx
+      .update(sales)
+      .set({
+        status: "PENDING",
+        paymentMethod: null,
+        updatedAt: now,
+      })
+      .where(and(eq(sales.id, sid), eq(sales.locationId, locationId)));
+
     await logAudit({
       locationId,
       userId: sellerId,
@@ -158,35 +349,40 @@ async function createCredit({ locationId, sellerId, saleId, note }) {
       meta: {
         saleId: sid,
         customerId: sale.customerId,
-        amount: sale.totalAmount,
+        principalAmount: principal,
+        dueDate: due ? due.toISOString() : null,
+        creditMode: mode,
+        installmentCount:
+          mode === "INSTALLMENT_PLAN" ? Number(installmentCount || 0) : null,
+        installmentAmount:
+          mode === "INSTALLMENT_PLAN" ? Number(installmentAmount || 0) : null,
+        firstInstallmentDate:
+          mode === "INSTALLMENT_PLAN"
+            ? firstInstallmentDate || dueDate || null
+            : null,
       },
     });
 
-    // 🔔 Credit request created -> manager/admin (warn)
     await notificationService.notifyRoles({
       locationId,
       roles: ["manager", "admin"],
       actorUserId: sellerId,
       type: "CREDIT_REQUEST_CREATED",
       title: `Credit request created for Sale #${sid}`,
-      body: `Amount: ${sale.totalAmount}. Customer ID: ${sale.customerId}. Credit ID: ${created.id}.`,
+      body:
+        mode === "INSTALLMENT_PLAN"
+          ? `Installment credit request created. Amount: ${principal}. Credit ID: ${created.id}.`
+          : `Open-balance credit request created. Amount: ${principal}. Credit ID: ${created.id}.`,
       priority: "warn",
       entity: "credit",
       entityId: Number(created.id),
+      tx,
     });
 
     return created;
   });
 }
 
-/**
- * Approve/Reject credit.
- *
- * ✅ Allowed only when status=PENDING
- * ✅ Approve -> status=APPROVED + approvedBy/approvedAt
- * ✅ Reject  -> status=REJECTED + rejectedBy/rejectedAt (NOT approved*)
- * ✅ Reject also cancels the sale (CANCELLED)
- */
 async function decideCredit({
   locationId,
   managerId,
@@ -209,6 +405,9 @@ async function decideCredit({
     throw err;
   }
 
+  const cleanNote = toNote(note);
+  const now = new Date();
+
   return db.transaction(async (tx) => {
     const creditRows = await tx
       .select()
@@ -222,57 +421,66 @@ async function decideCredit({
       throw err;
     }
 
-    if (String(credit.status || "").toUpperCase() !== "PENDING") {
+    if (!isPendingStatus(credit.status)) {
       const err = new Error("Credit already processed");
       err.code = "BAD_STATUS";
       err.debug = { status: credit.status };
       throw err;
     }
 
-    const now = new Date();
-    const cleanNote = toNote(note);
-
     if (dec === "REJECT") {
-      // 1) Cancel sale
-      await tx
-        .update(sales)
-        .set({
-          status: "CANCELLED",
-          canceledAt: now,
-          canceledBy: managerId,
-          cancelReason: cleanNote || "Credit rejected",
-          updatedAt: now,
-        })
-        .where(
-          and(eq(sales.id, credit.saleId), eq(sales.locationId, locationId)),
-        );
-
-      // 2) Mark credit as REJECTED (use rejectedBy/rejectedAt)
       await tx
         .update(credits)
         .set({
           status: "REJECTED",
           rejectedBy: managerId,
           rejectedAt: now,
-          note: cleanNote || "Credit rejected (sale cancelled)",
+          note: cleanNote || credit.note,
         })
         .where(and(eq(credits.id, id), eq(credits.locationId, locationId)));
 
-      // ✅ FIX: include locationId
+      await tx
+        .update(sales)
+        .set({
+          status: "FULFILLED",
+          paymentMethod: null,
+          updatedAt: now,
+        })
+        .where(
+          and(eq(sales.id, credit.saleId), eq(sales.locationId, locationId)),
+        );
+
       await logAudit({
         locationId,
         userId: managerId,
         action: AUDIT.CREDIT_REJECT,
         entity: "credit",
         entityId: id,
-        description: "Credit rejected (sale cancelled)",
-        meta: { decision: "REJECT", note: cleanNote },
+        description: "Credit rejected",
+        meta: {
+          saleId: credit.saleId,
+          note: cleanNote,
+        },
       });
 
-      return { ok: true, decision: "REJECT" };
+      await notificationService.createNotification({
+        locationId,
+        recipientUserId: Number(credit.createdBy),
+        actorUserId: managerId,
+        type: "CREDIT_REJECTED",
+        title: `Credit rejected (Sale #${credit.saleId})`,
+        body: cleanNote
+          ? `Reason: ${cleanNote}`
+          : "Credit request was rejected.",
+        priority: "normal",
+        entity: "credit",
+        entityId: Number(id),
+        tx,
+      });
+
+      return { decision: "REJECT", creditId: id };
     }
 
-    // APPROVE
     await tx
       .update(credits)
       .set({
@@ -283,7 +491,16 @@ async function decideCredit({
       })
       .where(and(eq(credits.id, id), eq(credits.locationId, locationId)));
 
-    // ✅ FIX: include locationId
+    await tx
+      .update(sales)
+      .set({
+        status: "PENDING",
+        updatedAt: now,
+      })
+      .where(
+        and(eq(sales.id, credit.saleId), eq(sales.locationId, locationId)),
+      );
+
     await logAudit({
       locationId,
       userId: managerId,
@@ -291,33 +508,54 @@ async function decideCredit({
       entity: "credit",
       entityId: id,
       description: "Credit approved",
-      meta: { note: cleanNote },
+      meta: {
+        saleId: credit.saleId,
+        note: cleanNote,
+      },
     });
 
-    // 🔔 Notify seller who created the credit
     await notificationService.createNotification({
       locationId,
       recipientUserId: Number(credit.createdBy),
       actorUserId: managerId,
-      type: "CREDIT_REJECTED",
-      title: `Credit rejected (Sale #${credit.saleId})`,
-      body: cleanNote ? `Reason: ${cleanNote}` : "No reason provided.",
+      type: "CREDIT_APPROVED",
+      title: `Credit approved (Sale #${credit.saleId})`,
+      body: cleanNote
+        ? `Approved. Note: ${cleanNote}`
+        : "Credit request approved.",
       priority: "normal",
       entity: "credit",
       entityId: Number(id),
+      tx,
     });
 
-    return { ok: true, decision: "APPROVE" };
+    await notificationService.notifyRoles({
+      locationId,
+      roles: ["cashier", "admin"],
+      actorUserId: managerId,
+      type: "CREDIT_APPROVED_READY_FOR_COLLECTION",
+      title: `Approved credit ready for collection`,
+      body: `Credit #${id} for Sale #${credit.saleId} is approved and may be collected.`,
+      priority: "normal",
+      entity: "credit",
+      entityId: Number(id),
+      tx,
+    });
+
+    return { decision: "APPROVE", creditId: id };
   });
 }
 
-async function settleCredit({
+async function recordCreditPayment({
   locationId,
   cashierId,
   creditId,
+  amount,
   method,
   note,
+  reference,
   cashSessionId,
+  installmentId,
 }) {
   const id = Number(creditId);
   if (!Number.isInteger(id) || id <= 0) {
@@ -326,18 +564,12 @@ async function settleCredit({
     throw err;
   }
 
-  function normMethod(v) {
-    const m = v == null ? "" : String(v);
-    const out = m.trim().toUpperCase();
-    return out || "CASH";
-  }
-
-  function toNote(v, max = 500) {
-    if (v == null) return null;
-    const s = String(v).trim();
-    if (!s) return null;
-    return s.slice(0, max);
-  }
+  const payAmount = toPositiveInt(amount, "BAD_AMOUNT");
+  const payMethod = normMethod(method);
+  const cleanNote = toNote(note);
+  const cleanReference = toNote(reference, 120);
+  const installmentTargetId = toNullableInt(installmentId);
+  const now = new Date();
 
   return db.transaction(async (tx) => {
     const creditRows = await tx
@@ -352,32 +584,22 @@ async function settleCredit({
       throw err;
     }
 
-    if (String(credit.status || "").toUpperCase() !== "APPROVED") {
-      const err = new Error("Credit must be approved before settlement");
+    if (!isCollectibleStatus(credit.status)) {
+      const err = new Error("Credit must be approved before collection");
       err.code = "NOT_APPROVED";
       err.debug = { status: credit.status };
       throw err;
     }
 
-    // Prevent duplicate payment for sale (also keep UNIQUE index in DB)
-    const existingPay = await tx.execute(sql`
-      SELECT id FROM payments
-      WHERE sale_id = ${credit.saleId} AND location_id = ${locationId}
-      LIMIT 1
-    `);
-    const payRows = existingPay.rows || existingPay;
-    if (payRows.length > 0) {
-      const err = new Error("Payment already recorded for this sale");
-      err.code = "DUPLICATE_PAYMENT";
+    const remaining = Number(credit.remainingAmount || 0) || 0;
+    if (payAmount > remaining) {
+      const err = new Error("Payment exceeds remaining balance");
+      err.code = "OVERPAYMENT";
+      err.debug = { remaining, attempted: payAmount };
       throw err;
     }
 
-    const now = new Date();
-    const payMethod = normMethod(method);
-    const cleanNote = toNote(note);
-
-    // ✅ Resolve OPEN cash session when method is CASH (same behavior as recordPayment)
-    let resolvedSessionId = cashSessionId ? Number(cashSessionId) : null;
+    let resolvedSessionId = toNullableInt(cashSessionId);
 
     if (payMethod === "CASH") {
       if (!resolvedSessionId) {
@@ -415,26 +637,122 @@ async function settleCredit({
         }
       }
     } else {
-      resolvedSessionId = resolvedSessionId || null; // non-cash allowed to be null
+      resolvedSessionId = resolvedSessionId || null;
     }
 
-    const [payment] = await tx
-      .insert(payments)
+    let matchedInstallment = null;
+
+    if (normCreditMode(credit.creditMode) === "INSTALLMENT_PLAN") {
+      if (installmentTargetId) {
+        const found = await tx.execute(sql`
+          SELECT *
+          FROM credit_installments
+          WHERE id = ${installmentTargetId}
+            AND credit_id = ${id}
+            AND location_id = ${locationId}
+          LIMIT 1
+        `);
+        const foundRows = found?.rows || found || [];
+        matchedInstallment = foundRows[0] || null;
+
+        if (!matchedInstallment) {
+          const err = new Error("Installment not found");
+          err.code = "INSTALLMENT_NOT_FOUND";
+          err.debug = { installmentId: installmentTargetId };
+          throw err;
+        }
+      } else {
+        const found = await tx.execute(sql`
+          SELECT *
+          FROM credit_installments
+          WHERE credit_id = ${id}
+            AND location_id = ${locationId}
+            AND status IN ('PENDING', 'PARTIALLY_PAID', 'OVERDUE')
+          ORDER BY sequence_no ASC
+          LIMIT 1
+        `);
+        const foundRows = found?.rows || found || [];
+        matchedInstallment = foundRows[0] || null;
+      }
+    }
+
+    const [creditPayment] = await tx
+      .insert(creditPayments)
       .values({
         locationId,
-        saleId: credit.saleId,
-        cashierId,
-        cashSessionId: resolvedSessionId,
-        amount: credit.amount,
+        creditId: id,
+        saleId: Number(credit.saleId),
+        installmentId: matchedInstallment
+          ? Number(matchedInstallment.id)
+          : null,
+        amount: payAmount,
         method: payMethod,
-        note: cleanNote || "Credit settlement",
+        cashSessionId: resolvedSessionId,
+        receivedBy: cashierId,
+        reference: cleanReference,
+        note: cleanNote,
         createdAt: now,
       })
       .returning();
 
+    if (matchedInstallment) {
+      const installmentRemaining = Math.max(
+        0,
+        Number(matchedInstallment.amount || 0) -
+          Number(
+            matchedInstallment.paid_amount ||
+              matchedInstallment.paidAmount ||
+              0,
+          ),
+      );
+
+      const nextInstallmentPaid =
+        Number(
+          matchedInstallment.paid_amount || matchedInstallment.paidAmount || 0,
+        ) + Math.min(payAmount, installmentRemaining);
+
+      const nextInstallmentStatus =
+        nextInstallmentPaid >= Number(matchedInstallment.amount || 0)
+          ? "PAID"
+          : "PARTIALLY_PAID";
+
+      await tx.execute(sql`
+        UPDATE credit_installments
+        SET
+          paid_amount = ${nextInstallmentPaid},
+          status = ${nextInstallmentStatus},
+          paid_at = CASE
+            WHEN ${nextInstallmentStatus} = 'PAID' THEN ${now}
+            ELSE paid_at
+          END,
+          updated_at = ${now}
+        WHERE id = ${Number(matchedInstallment.id)}
+      `);
+    }
+
+    const nextPaid = (Number(credit.paidAmount || 0) || 0) + payAmount;
+    const nextRemaining = Math.max(0, remaining - payAmount);
+    const isFinal = nextRemaining === 0;
+    const nextStatus = isFinal ? "SETTLED" : "PARTIALLY_PAID";
+
+    await tx
+      .update(credits)
+      .set({
+        paidAmount: nextPaid,
+        remainingAmount: nextRemaining,
+        status: nextStatus,
+        settledBy: isFinal ? cashierId : credit.settledBy,
+        settledAt: isFinal ? now : credit.settledAt,
+        note: cleanNote || credit.note,
+      })
+      .where(and(eq(credits.id, id), eq(credits.locationId, locationId)));
+
     await tx
       .update(sales)
-      .set({ status: "COMPLETED", updatedAt: now })
+      .set({
+        status: isFinal ? "COMPLETED" : "PENDING",
+        updatedAt: now,
+      })
       .where(
         and(eq(sales.id, credit.saleId), eq(sales.locationId, locationId)),
       );
@@ -443,25 +761,25 @@ async function settleCredit({
       locationId,
       cashierId,
       cashSessionId: resolvedSessionId,
-      type: "CREDIT_SETTLEMENT",
+      type: "CREDIT_PAYMENT",
       direction: "IN",
-      amount: credit.amount,
+      amount: payAmount,
       method: payMethod,
-      saleId: credit.saleId,
-      paymentId: payment.id,
-      note: cleanNote || "Credit settlement",
+      reference: cleanReference,
+      saleId: Number(credit.saleId),
+      creditId: id,
+      creditPaymentId: Number(creditPayment.id),
+      note: cleanNote || "Credit payment",
       createdAt: now,
     });
 
-    await tx
-      .update(credits)
-      .set({
-        status: "SETTLED",
-        settledBy: cashierId,
-        settledAt: now,
-        note: cleanNote || credit.note,
-      })
-      .where(and(eq(credits.id, id), eq(credits.locationId, locationId)));
+    const messageMeta = buildCollectionMessage({
+      creditMode: credit.creditMode,
+      isFinal,
+      matchedInstallment: !!matchedInstallment,
+      paymentAmount: payAmount,
+      remainingAmount: nextRemaining,
+    });
 
     await logAudit({
       locationId,
@@ -469,75 +787,70 @@ async function settleCredit({
       action: AUDIT.CREDIT_SETTLED,
       entity: "credit",
       entityId: id,
-      description: "Credit settled",
+      description: messageMeta.message,
       meta: {
+        saleId: credit.saleId,
+        creditPaymentId: creditPayment.id,
+        amount: payAmount,
         method: payMethod,
-        amount: credit.amount,
+        remainingAmount: nextRemaining,
         cashSessionId: resolvedSessionId,
+        creditMode: credit.creditMode,
+        installmentId: matchedInstallment
+          ? Number(matchedInstallment.id)
+          : null,
+        messageLabel: messageMeta.label,
       },
     });
 
-    // 🔔 Notify seller who created the credit (and manager/admin as info)
     await notificationService.createNotification({
       locationId,
       recipientUserId: Number(credit.createdBy),
       actorUserId: cashierId,
-      type: "CREDIT_SETTLED",
-      title: `Credit settled (Sale #${credit.saleId})`,
-      body: `Amount: ${credit.amount}. Method: ${payMethod}. Payment #${payment.id}.`,
+      type: isFinal ? "CREDIT_SETTLED" : "CREDIT_PARTIAL_PAYMENT_RECORDED",
+      title: isFinal
+        ? `Credit settled (Sale #${credit.saleId})`
+        : `Credit payment recorded (Sale #${credit.saleId})`,
+      body: messageMeta.message,
       priority: "normal",
       entity: "credit",
       entityId: Number(id),
+      tx,
     });
 
     await notificationService.notifyRoles({
       locationId,
       roles: ["manager", "admin"],
       actorUserId: cashierId,
-      type: "CREDIT_SETTLED_INFO",
-      title: `Credit settled for Sale #${credit.saleId}`,
-      body: `Amount: ${credit.amount}. Method: ${payMethod}.`,
+      type: isFinal ? "CREDIT_SETTLED_INFO" : "CREDIT_PARTIAL_PAYMENT_INFO",
+      title: isFinal
+        ? `Credit settled for Sale #${credit.saleId}`
+        : `Credit payment recorded for Sale #${credit.saleId}`,
+      body: messageMeta.message,
       priority: "normal",
       entity: "credit",
       entityId: Number(id),
+      tx,
     });
 
-    return { ok: true, paymentId: payment.id };
+    return {
+      creditId: id,
+      creditPaymentId: Number(creditPayment.id),
+      saleId: Number(credit.saleId),
+      amountRecorded: payAmount,
+      paidAmount: nextPaid,
+      remainingAmount: nextRemaining,
+      status: nextStatus,
+      creditMode: normCreditMode(credit.creditMode),
+      installmentId: matchedInstallment ? Number(matchedInstallment.id) : null,
+      messageLabel: messageMeta.label,
+      message: messageMeta.message,
+    };
   });
 }
 
-/**
- * Legacy exports support:
- * - keep names if older controllers import them
- */
 async function listOpenCredits({ locationId, q }) {
   const pattern = q ? `%${String(q).trim()}%` : null;
-
-  // "Open credits" in the new lifecycle = not settled and not rejected
-  // Most teams want PENDING + APPROVED.
-  if (!pattern) {
-    const res = await db.execute(sql`
-      SELECT
-        c.id,
-        c.sale_id as "saleId",
-        c.customer_id as "customerId",
-        cu.name as "customerName",
-        cu.phone as "customerPhone",
-        c.amount,
-        c.status,
-        c.approved_at as "approvedAt",
-        c.rejected_at as "rejectedAt",
-        c.settled_at as "settledAt",
-        c.created_at as "createdAt"
-      FROM credits c
-      JOIN customers cu ON cu.id = c.customer_id
-      WHERE c.location_id = ${locationId}
-        AND c.status IN ('PENDING','APPROVED')
-      ORDER BY c.created_at DESC
-      LIMIT 50
-    `);
-    return res.rows || res;
-  }
 
   const res = await db.execute(sql`
     SELECT
@@ -546,22 +859,32 @@ async function listOpenCredits({ locationId, q }) {
       c.customer_id as "customerId",
       cu.name as "customerName",
       cu.phone as "customerPhone",
-      c.amount,
+      c.principal_amount as "principalAmount",
+      c.paid_amount as "paidAmount",
+      c.remaining_amount as "remainingAmount",
+      c.credit_mode as "creditMode",
+      c.due_date as "dueDate",
       c.status,
       c.approved_at as "approvedAt",
       c.rejected_at as "rejectedAt",
       c.settled_at as "settledAt",
       c.created_at as "createdAt"
     FROM credits c
-    JOIN customers cu ON cu.id = c.customer_id
+    JOIN customers cu
+      ON cu.id = c.customer_id
+     AND cu.location_id = c.location_id
     WHERE c.location_id = ${locationId}
-      AND c.status IN ('PENDING','APPROVED')
-      AND (cu.name ILIKE ${pattern} OR cu.phone ILIKE ${pattern})
+      AND c.status IN ('PENDING', 'PENDING_APPROVAL', 'APPROVED', 'PARTIALLY_PAID')
+      ${
+        pattern
+          ? sql`AND (cu.name ILIKE ${pattern} OR cu.phone ILIKE ${pattern})`
+          : sql``
+      }
     ORDER BY c.created_at DESC
     LIMIT 50
   `);
 
-  return res.rows || res;
+  return res?.rows || res || [];
 }
 
 async function getCreditBySale({ locationId, saleId }) {
@@ -576,15 +899,16 @@ async function getCreditBySale({ locationId, saleId }) {
     LIMIT 1
   `);
 
-  const rows = res.rows || res;
+  const rows = res?.rows || res || [];
   return rows[0] || null;
 }
 
 module.exports = {
   createCredit,
-  decideCredit, // ✅ NEW canonical name
-  approveCredit: decideCredit, // ✅ backward compatible alias (if controllers call approveCredit)
-  settleCredit,
+  decideCredit,
+  approveCredit: decideCredit,
+  recordCreditPayment,
+  settleCredit: recordCreditPayment,
   listOpenCredits,
   getCreditBySale,
 };

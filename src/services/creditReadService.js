@@ -1,4 +1,3 @@
-// backend/src/services/creditReadService.js
 "use strict";
 
 const { db } = require("../config/db");
@@ -10,23 +9,36 @@ function rowsOf(result) {
 
 function toInt(v, def = null) {
   const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n) : def;
+}
+
+function toNum(v, def = 0) {
+  const n = Number(v);
   return Number.isFinite(n) ? n : def;
 }
 
-/**
- * Normalize ANY credits row into a stable shape,
- * even if DB columns differ (approved_by vs approved_by_user_id, etc.)
- */
 function normalizeCreditRow(r) {
   if (!r) return null;
 
   const id = toInt(r.id ?? r.ID, null);
-
   const locationId = toInt(r.locationId ?? r.location_id, null);
   const saleId = toInt(r.saleId ?? r.sale_id, null);
   const customerId = toInt(r.customerId ?? r.customer_id, null);
 
-  const amount = Number(r.amount ?? 0);
+  const principalAmount = toNum(
+    r.principalAmount ?? r.principal_amount ?? r.amount,
+    0,
+  );
+
+  const paidAmount = toNum(r.paidAmount ?? r.paid_amount, 0);
+
+  const remainingAmount = toNum(
+    r.remainingAmount ?? r.remaining_amount,
+    Math.max(0, principalAmount - paidAmount),
+  );
+
+  const creditMode = r.creditMode ?? r.credit_mode ?? r.mode ?? "OPEN_BALANCE";
+  const dueDate = r.dueDate ?? r.due_date ?? null;
   const status = r.status ?? null;
 
   const createdBy = toInt(
@@ -44,18 +56,25 @@ function normalizeCreditRow(r) {
 
   const approvedAt = r.approvedAt ?? r.approved_at ?? null;
 
+  const rejectedBy = toInt(
+    r.rejectedBy ??
+      r.rejected_by ??
+      r.rejected_by_user_id ??
+      r.rejectedByUserId,
+    null,
+  );
+
+  const rejectedAt = r.rejectedAt ?? r.rejected_at ?? null;
+
   const settledBy = toInt(
     r.settledBy ?? r.settled_by ?? r.settled_by_user_id ?? r.settledByUserId,
     null,
   );
 
   const settledAt = r.settledAt ?? r.settled_at ?? null;
-
   const note = r.note ?? null;
-
   const createdAt = r.createdAt ?? r.created_at ?? null;
 
-  // We alias these in SQL as customer_name/customer_phone
   const customerName =
     r.customerName ?? r.customer_name ?? r.customerNameJoin ?? null;
 
@@ -69,11 +88,22 @@ function normalizeCreditRow(r) {
     customerId,
     customerName,
     customerPhone,
-    amount: Number.isFinite(amount) ? amount : 0,
+
+    principalAmount,
+    paidAmount,
+    remainingAmount,
+    creditMode,
+    dueDate,
+
+    // backward-compatible alias
+    amount: principalAmount,
+
     status,
     createdBy,
     approvedBy,
     approvedAt,
+    rejectedBy,
+    rejectedAt,
     settledBy,
     settledAt,
     note,
@@ -82,8 +112,7 @@ function normalizeCreditRow(r) {
 }
 
 /**
- * listCredits returns EXACT shape your controller expects:
- * { rows, nextCursor }
+ * GET /credits?status=&q=&limit=&cursor=
  */
 async function listCredits({
   locationId,
@@ -110,7 +139,12 @@ async function listCredits({
       ${st ? sql`AND c.status = ${st}` : sql``}
       ${
         pattern
-          ? sql`AND (cu.name ILIKE ${pattern} OR cu.phone ILIKE ${pattern})`
+          ? sql`AND (
+              cu.name ILIKE ${pattern}
+              OR cu.phone ILIKE ${pattern}
+              OR CAST(c.id AS TEXT) ILIKE ${pattern}
+              OR CAST(c.sale_id AS TEXT) ILIKE ${pattern}
+            )`
           : sql``
       }
       ${cur ? sql`AND c.id < ${cur}` : sql``}
@@ -120,23 +154,20 @@ async function listCredits({
 
   const raw = rowsOf(res);
   const rows = raw.map(normalizeCreditRow).filter(Boolean);
-
   const nextCursor = rows.length === lim ? rows[rows.length - 1]?.id : null;
+
   return { rows, nextCursor };
 }
 
 /**
- * getCreditById returns:
- * { ...credit, items: [...], payments: [...] }
- *
- * - items come from sale_items + products
- * - payments come from payments table (0..1 in your current schema)
+ * GET /credits/:id
+ * Returns:
+ * { ...credit, items: [...], payments: [...], installments: [...] }
  */
 async function getCreditById({ locationId, creditId }) {
   const id = Number(creditId);
   if (!Number.isInteger(id) || id <= 0) return null;
 
-  // 1) Credit core + customer join
   const res = await db.execute(sql`
     SELECT
       c.*,
@@ -157,11 +188,9 @@ async function getCreditById({ locationId, creditId }) {
 
   const saleId = Number(credit.saleId);
   if (!Number.isInteger(saleId) || saleId <= 0) {
-    return { ...credit, items: [], payments: [] };
+    return { ...credit, items: [], payments: [], installments: [] };
   }
 
-  // 2) Sale items + products
-  // NOTE: assumes tables are named: sale_items, products
   const itemsRes = await db.execute(sql`
     SELECT
       si.id,
@@ -185,38 +214,83 @@ async function getCreditById({ locationId, creditId }) {
     productId: toInt(r.productId ?? r.product_id, null),
     productName: r.productName ?? r.product_name ?? null,
     sku: r.sku ?? null,
-    qty: Number(r.qty ?? 0) || 0,
-    unitPrice: Number(r.unitPrice ?? r.unit_price ?? 0) || 0,
-    lineTotal: Number(r.lineTotal ?? r.line_total ?? 0) || 0,
+    qty: toNum(r.qty ?? 0, 0),
+    unitPrice: toNum(r.unitPrice ?? r.unit_price ?? 0, 0),
+    lineTotal: toNum(r.lineTotal ?? r.line_total ?? 0, 0),
   }));
 
-  // 3) Payments for that sale
-  // In your current schema, usually 0..1, but returning array keeps you future-proof for installments.
   const payRes = await db.execute(sql`
     SELECT
-      p.id,
-      p.amount,
-      p.method,
-      p.note,
-      p.created_at as "createdAt",
-      p.cashier_id as "cashierId"
-    FROM payments p
-    WHERE p.location_id = ${locationId}
-      AND p.sale_id = ${saleId}
-    ORDER BY p.id ASC
+      cp.id,
+      cp.amount,
+      cp.method,
+      cp.note,
+      cp.reference,
+      cp.created_at as "createdAt",
+      cp.received_by as "receivedBy",
+      cp.cash_session_id as "cashSessionId"
+    FROM credit_payments cp
+    WHERE cp.location_id = ${locationId}
+      AND cp.credit_id = ${id}
+    ORDER BY cp.id ASC
   `);
 
   const payRaw = rowsOf(payRes);
   const payments = payRaw.map((p) => ({
     id: toInt(p.id, null),
-    amount: Number(p.amount ?? 0) || 0,
+    amount: toNum(p.amount ?? 0, 0),
     method: p.method ?? null,
     note: p.note ?? null,
+    reference: p.reference ?? null,
     createdAt: p.createdAt ?? p.created_at ?? null,
-    cashierId: toInt(p.cashierId ?? p.cashier_id, null),
+    receivedBy: toInt(
+      p.receivedBy ?? p.received_by ?? p.cashierId ?? p.cashier_id,
+      null,
+    ),
+    cashSessionId: toInt(p.cashSessionId ?? p.cash_session_id, null),
   }));
 
-  return { ...credit, items, payments };
+  const instRes = await db.execute(sql`
+    SELECT
+      ci.id,
+      ci.installment_no as "installmentNo",
+      ci.amount,
+      ci.paid_amount as "paidAmount",
+      ci.remaining_amount as "remainingAmount",
+      ci.due_date as "dueDate",
+      ci.status,
+      ci.paid_at as "paidAt",
+      ci.note,
+      ci.created_at as "createdAt"
+    FROM credit_installments ci
+    WHERE ci.location_id = ${locationId}
+      AND ci.credit_id = ${id}
+    ORDER BY ci.installment_no ASC, ci.id ASC
+  `);
+
+  const instRaw = rowsOf(instRes);
+  const installments = instRaw.map((r) => ({
+    id: toInt(r.id, null),
+    installmentNo: toInt(r.installmentNo ?? r.installment_no, null),
+    amount: toNum(r.amount ?? 0, 0),
+    paidAmount: toNum(r.paidAmount ?? r.paid_amount ?? 0, 0),
+    remainingAmount: toNum(r.remainingAmount ?? r.remaining_amount ?? 0, 0),
+    dueDate: r.dueDate ?? r.due_date ?? null,
+    status: r.status ?? null,
+    paidAt: r.paidAt ?? r.paid_at ?? null,
+    note: r.note ?? null,
+    createdAt: r.createdAt ?? r.created_at ?? null,
+  }));
+
+  return {
+    ...credit,
+    items,
+    payments,
+    installments,
+  };
 }
 
-module.exports = { listCredits, getCreditById };
+module.exports = {
+  listCredits,
+  getCreditById,
+};

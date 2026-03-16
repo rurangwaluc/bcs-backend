@@ -5,26 +5,29 @@ const { saleItems } = require("../db/schema/sale_items.schema");
 const { products } = require("../db/schema/products.schema");
 const { inventoryBalances } = require("../db/schema/inventory.schema");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
-const { credits } = require("../db/schema/credits.schema");
 const { customers } = require("../db/schema/customers.schema");
 const { eq, and, inArray } = require("drizzle-orm");
 
 /**
- * Option B (NO holdings):
+ * BCS sales flow:
  * - Seller creates sale as DRAFT (no stock movement)
  * - Storekeeper fulfills sale -> deduct inventory -> status becomes FULFILLED
- * - Seller marks PAID/PENDING -> status changes (NO stock movement here)
+ * - Seller marks PAID -> status becomes AWAITING_PAYMENT_RECORD
+ * - Cashier records payment -> sale becomes COMPLETED
+ * - Seller creates credit through POST /credits (NOT through /sales/:id/mark)
  *
  * Statuses:
  * - DRAFT
  * - FULFILLED
- * - PENDING
+ * - PENDING                // credit lifecycle status on sale side
+ * - APPROVED               // approved credit
+ * - PARTIALLY_PAID         // future-ready credit repayment state
  * - AWAITING_PAYMENT_RECORD
  * - COMPLETED
  * - CANCELLED
  */
 
-const PAYMENT_METHODS = new Set(["CASH", "MOMO", "BANK"]);
+const PAYMENT_METHODS = new Set(["CASH", "MOMO", "CARD", "BANK", "OTHER"]);
 
 function toInt(n) {
   const x = Number(n);
@@ -87,6 +90,7 @@ function normPhone(v) {
     .trim()
     .replace(/[\s\-()]/g, "");
 }
+
 function normName(v) {
   if (v == null) return "";
   return String(v).trim();
@@ -103,22 +107,13 @@ async function createSale({
   discountPercent,
   discountAmount,
 }) {
-  function normPhone(v) {
-    if (v == null) return "";
-    return String(v)
-      .trim()
-      .replace(/[\s\-()]/g, "");
-  }
-  function normName(v) {
-    if (v == null) return "";
-    return String(v).trim();
-  }
   function toNote(v) {
     const s = v == null ? "" : String(v);
     const t = s.trim();
     if (!t) return null;
     return t.slice(0, 200);
   }
+
   function toId(v) {
     const n = Number(v);
     return Number.isInteger(n) && n > 0 ? n : null;
@@ -132,6 +127,7 @@ async function createSale({
     err.code = "BAD_LOCATION";
     throw err;
   }
+
   if (!sellId) {
     const err = new Error("Invalid seller");
     err.code = "BAD_SELLER";
@@ -146,6 +142,7 @@ async function createSale({
   const ids = [
     ...new Set(rawItems.map((x) => Number(x?.productId)).filter((x) => x > 0)),
   ];
+
   if (ids.length === 0) {
     const err = new Error("No items");
     err.code = "NO_ITEMS";
@@ -539,7 +536,7 @@ async function markSale({
     }
 
     const current = String(sale.status).toUpperCase();
-    const allowed = ["FULFILLED", "PENDING", "AWAITING_PAYMENT_RECORD"];
+    const allowed = ["FULFILLED", "AWAITING_PAYMENT_RECORD"];
     if (!allowed.includes(current)) {
       const err = new Error("Invalid status");
       err.code = "BAD_STATUS";
@@ -548,81 +545,65 @@ async function markSale({
     }
 
     const raw = String(status || "").toUpperCase();
-    const nextStatus = raw === "PAID" ? "AWAITING_PAYMENT_RECORD" : "PENDING";
 
-    let methodSafe = null;
-    if (raw === "PAID") {
-      const m = String(paymentMethod || "").toUpperCase();
-      if (!PAYMENT_METHODS.has(m)) {
-        const err = new Error("Invalid payment method");
-        err.code = "BAD_PAYMENT_METHOD";
-        err.debug = { paymentMethod };
-        throw err;
-      }
-      methodSafe = m;
+    // Credit is no longer created through salesService.markSale in BCS.
+    if (raw === "PENDING" || raw === "CREDIT") {
+      const err = new Error("Use POST /credits to create a credit request");
+      err.code = "USE_CREDIT_ENDPOINT";
+      throw err;
     }
 
+    if (raw !== "PAID") {
+      const err = new Error("Invalid sale mark status");
+      err.code = "BAD_MARK_STATUS";
+      err.debug = { status: raw, allowed: ["PAID"] };
+      throw err;
+    }
+
+    const nextStatus = "AWAITING_PAYMENT_RECORD";
+
+    const m = String(paymentMethod || "").toUpperCase();
+    if (!PAYMENT_METHODS.has(m)) {
+      const err = new Error("Invalid payment method");
+      err.code = "BAD_PAYMENT_METHOD";
+      err.debug = { paymentMethod };
+      throw err;
+    }
+    const methodSafe = m;
+
     if (current === nextStatus) {
-      if (nextStatus === "AWAITING_PAYMENT_RECORD") {
-        const existing = String(sale.paymentMethod || "").toUpperCase();
-        if (methodSafe && existing !== methodSafe) {
-          const [patched] = await tx
-            .update(sales)
-            .set({ paymentMethod: methodSafe, updatedAt: new Date() })
-            .where(eq(sales.id, saleId))
-            .returning();
+      const existing = String(sale.paymentMethod || "").toUpperCase();
+      if (methodSafe && existing !== methodSafe) {
+        const [patched] = await tx
+          .update(sales)
+          .set({ paymentMethod: methodSafe, updatedAt: new Date() })
+          .where(eq(sales.id, saleId))
+          .returning();
 
-          await tx.insert(auditLogs).values({
-            locationId,
-            userId: actorId,
-            action: "SALE_MARK",
-            entity: "sale",
-            entityId: saleId,
-            description: `Sale #${saleId} payment method updated -> ${methodSafe}`,
-          });
+        await tx.insert(auditLogs).values({
+          locationId,
+          userId: actorId,
+          action: "SALE_MARK",
+          entity: "sale",
+          entityId: saleId,
+          description: `Sale #${saleId} payment method updated -> ${methodSafe}`,
+        });
 
-          return patched;
-        }
+        return patched;
       }
+
       return sale;
     }
 
-    const patch = {
-      status: nextStatus,
-      updatedAt: new Date(),
-      paymentMethod:
-        nextStatus === "AWAITING_PAYMENT_RECORD" ? methodSafe : null,
-    };
-
     const [updated] = await tx
       .update(sales)
-      .set(patch)
+      .set({
+        status: nextStatus,
+        updatedAt: new Date(),
+        paymentMethod: methodSafe,
+      })
       .where(eq(sales.id, saleId))
       .returning();
-
-    if (nextStatus === "PENDING") {
-      if (!sale.customerId) {
-        const err = new Error(
-          "Credit requires a customer. Select/create customer first.",
-        );
-        err.code = "MISSING_CUSTOMER";
-        throw err;
-      }
-
-      await tx
-        .insert(credits)
-        .values({
-          locationId,
-          saleId,
-          customerId: sale.customerId,
-          amount: sale.totalAmount,
-          status: "PENDING",
-          createdBy: actorId,
-          note: sale.note ?? null,
-          createdAt: new Date(),
-        })
-        .onConflictDoNothing();
-    }
 
     await tx.insert(auditLogs).values({
       locationId,
@@ -630,25 +611,20 @@ async function markSale({
       action: "SALE_MARK",
       entity: "sale",
       entityId: saleId,
-      description:
-        nextStatus === "AWAITING_PAYMENT_RECORD"
-          ? `Sale #${saleId} marked PAID -> ${nextStatus} (method=${methodSafe})`
-          : `Sale #${saleId} marked CREDIT -> ${nextStatus}`,
+      description: `Sale #${saleId} marked PAID -> ${nextStatus} (method=${methodSafe})`,
     });
 
-    if (nextStatus === "AWAITING_PAYMENT_RECORD") {
-      await notificationService.notifyRoles({
-        locationId,
-        roles: ["cashier", "manager"],
-        actorUserId: actorId,
-        type: "SALE_AWAITING_PAYMENT_RECORD",
-        title: `Sale #${saleId} needs payment record`,
-        body: `Seller marked this sale as PAID (${methodSafe}). Please record payment to complete.`,
-        priority: "high",
-        entity: "sale",
-        entityId: Number(saleId),
-      });
-    }
+    await notificationService.notifyRoles({
+      locationId,
+      roles: ["cashier", "manager"],
+      actorUserId: actorId,
+      type: "SALE_AWAITING_PAYMENT_RECORD",
+      title: `Sale #${saleId} needs payment record`,
+      body: `Seller marked this sale as PAID (${methodSafe}). Please record payment to complete.`,
+      priority: "high",
+      entity: "sale",
+      entityId: Number(saleId),
+    });
 
     return updated;
   });
@@ -677,6 +653,8 @@ async function cancelSale({ locationId, userId, saleId, reason }) {
     const needsRestore = [
       "FULFILLED",
       "PENDING",
+      "APPROVED",
+      "PARTIALLY_PAID",
       "AWAITING_PAYMENT_RECORD",
     ].includes(String(sale.status).toUpperCase());
 
