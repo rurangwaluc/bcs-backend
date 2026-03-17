@@ -1,82 +1,68 @@
+"use strict";
+
 const { z } = require("zod");
 
-const CREDIT_MODES = ["OPEN_BALANCE", "INSTALLMENT_PLAN"];
-const PAYMENT_METHODS = ["CASH", "MOMO", "CARD", "BANK", "OTHER"];
+const creditModeEnum = z.enum(["OPEN_BALANCE", "INSTALLMENT_PLAN"]);
+const paymentMethodEnum = z.enum(["CASH", "MOMO", "CARD", "BANK", "OTHER"]);
 
-const installmentItemSchema = z.object({
+const installmentRowSchema = z.object({
   amount: z.coerce.number().int().positive(),
-  dueDate: z.string().datetime({ offset: true }),
-  note: z.string().trim().max(500).optional(),
+  dueDate: z.string().min(1),
 });
 
-/**
- * POST /credits
- * Body:
- * {
- *   saleId,
- *   creditMode?,
- *   dueDate?,              // used mainly for OPEN_BALANCE
- *   note?,
- *   installments?: [       // required for INSTALLMENT_PLAN
- *     { amount, dueDate, note? }
- *   ]
- * }
- */
 const createCreditSchema = z
   .object({
     saleId: z.coerce.number().int().positive(),
-    creditMode: z
-      .string()
-      .trim()
-      .transform((v) => v.toUpperCase())
-      .refine((v) => CREDIT_MODES.includes(v), {
-        message: "Invalid credit mode",
-      })
-      .optional()
-      .default("OPEN_BALANCE"),
-    dueDate: z.string().datetime({ offset: true }).optional(),
-    note: z.string().trim().max(500).optional(),
-    installments: z.array(installmentItemSchema).max(120).optional(),
+    creditMode: creditModeEnum.default("OPEN_BALANCE"),
+    dueDate: z.string().optional().nullable(),
+    note: z.string().max(500).optional().nullable(),
+
+    amountPaidNow: z.coerce.number().int().min(0).optional().default(0),
+    paymentMethodNow: paymentMethodEnum.optional().default("CASH"),
+    cashSessionId: z.coerce.number().int().positive().optional().nullable(),
+    reference: z.string().max(120).optional().nullable(),
+
+    installmentCount: z.coerce.number().int().positive().optional().nullable(),
+    installmentAmount: z.coerce.number().int().positive().optional().nullable(),
+    firstInstallmentDate: z.string().optional().nullable(),
+
+    installments: z.array(installmentRowSchema).optional().nullable(),
   })
   .superRefine((data, ctx) => {
-    if (data.creditMode === "INSTALLMENT_PLAN") {
-      if (!Array.isArray(data.installments) || data.installments.length === 0) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["installments"],
-          message: "Installments are required for installment plan",
-        });
-      }
+    const mode = String(data.creditMode || "OPEN_BALANCE").toUpperCase();
+
+    if (mode !== "INSTALLMENT_PLAN") return;
+
+    const hasLegacyInstallments =
+      Array.isArray(data.installments) && data.installments.length > 0;
+
+    const hasFieldPlan =
+      Number(data.installmentCount || 0) > 0 &&
+      Number(data.installmentAmount || 0) > 0 &&
+      !!String(data.firstInstallmentDate || "").trim();
+
+    if (!hasLegacyInstallments && !hasFieldPlan) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["installments"],
+        message:
+          "For installment plan, provide installments or installmentCount + installmentAmount + firstInstallmentDate",
+      });
     }
   });
 
-/**
- * PATCH /credits/:id/decision
- * Body: { decision: "APPROVE" | "REJECT", note? }
- */
 const approveCreditSchema = z.object({
   decision: z.enum(["APPROVE", "REJECT"]),
-  note: z.string().trim().max(500).optional(),
+  note: z.string().max(500).optional().nullable(),
 });
 
-/**
- * PATCH /credits/:id/payment
- * Body: { amount, method, note?, cashSessionId?, reference? }
- */
 const recordCreditPaymentSchema = z.object({
   amount: z.coerce.number().int().positive(),
-  method: z
-    .string()
-    .trim()
-    .transform((v) => v.toUpperCase())
-    .refine((v) => PAYMENT_METHODS.includes(v), {
-      message: "Invalid payment method",
-    })
-    .optional()
-    .default("CASH"),
-  note: z.string().trim().max(500).optional(),
-  reference: z.string().trim().max(120).optional(),
-  cashSessionId: z.coerce.number().int().positive().optional(),
+  method: paymentMethodEnum.default("CASH"),
+  note: z.string().max(500).optional().nullable(),
+  reference: z.string().max(120).optional().nullable(),
+  cashSessionId: z.coerce.number().int().positive().optional().nullable(),
+  installmentId: z.coerce.number().int().positive().optional().nullable(),
 });
 
 module.exports = {

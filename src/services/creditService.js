@@ -72,6 +72,178 @@ function isCollectibleStatus(status) {
   return st === "APPROVED" || st === "PARTIALLY_PAID";
 }
 
+function formatIsoOrNull(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+function buildCreditStatusLabel(status, creditMode) {
+  const st = String(status || "")
+    .trim()
+    .toUpperCase();
+  const mode = normCreditMode(creditMode);
+
+  if (st === "PENDING" || st === "PENDING_APPROVAL") {
+    return "Pending approval";
+  }
+
+  if (st === "APPROVED") {
+    return mode === "INSTALLMENT_PLAN"
+      ? "Approved as installment plan"
+      : "Approved as open balance";
+  }
+
+  if (st === "PARTIALLY_PAID") {
+    return "Partially paid";
+  }
+
+  if (st === "SETTLED") {
+    return "Settled";
+  }
+
+  if (st === "REJECTED") {
+    return "Credit request rejected";
+  }
+
+  return st || "—";
+}
+
+function getInstallmentRemaining(installment) {
+  if (!installment) return 0;
+
+  const explicitRemaining = Number(
+    installment?.remainingAmount ?? installment?.remaining_amount,
+  );
+  if (Number.isFinite(explicitRemaining)) {
+    return Math.max(0, Math.round(explicitRemaining));
+  }
+
+  const amount = Number(installment?.amount ?? 0) || 0;
+  const paid =
+    Number(installment?.paidAmount ?? installment?.paid_amount ?? 0) || 0;
+
+  return Math.max(0, Math.round(amount - paid));
+}
+
+function findNextActiveInstallment(installments) {
+  const rows = Array.isArray(installments) ? installments : [];
+
+  const active = rows.filter((it) => {
+    const st = String(it?.status || "").toUpperCase();
+    return st === "PENDING" || st === "PARTIALLY_PAID" || st === "OVERDUE";
+  });
+
+  if (!active.length) return null;
+
+  active.sort((a, b) => {
+    const ad = new Date(a?.dueDate || a?.due_date || 0).getTime();
+    const bd = new Date(b?.dueDate || b?.due_date || 0).getTime();
+    return ad - bd;
+  });
+
+  return active[0] || null;
+}
+
+function buildPlanSummary({ creditMode, installments, dueDate }) {
+  const mode = normCreditMode(creditMode);
+  const rows = Array.isArray(installments) ? installments : [];
+
+  if (mode === "INSTALLMENT_PLAN") {
+    const count = rows.length;
+    if (count > 0) {
+      return `${count} installment${count === 1 ? "" : "s"} planned`;
+    }
+    return "Installment plan";
+  }
+
+  if (dueDate) return "Open balance";
+  return "Single running balance";
+}
+
+function buildRemainingBalanceLabel(remainingAmount) {
+  const remaining = Number(remainingAmount || 0) || 0;
+  return `Remaining balance ${Math.round(remaining).toLocaleString()} RWF`;
+}
+
+function buildNextInstallmentFields({ creditMode, installments, dueDate }) {
+  const mode = normCreditMode(creditMode);
+
+  if (mode === "INSTALLMENT_PLAN") {
+    const next = findNextActiveInstallment(installments);
+    const nextDue = next?.dueDate || next?.due_date || null;
+
+    return {
+      nextInstallmentDue: formatIsoOrNull(nextDue),
+      nextInstallmentLabel: nextDue ? "Next installment due" : null,
+      nextInstallmentId: next?.id ? Number(next.id) : null,
+      nextInstallmentSequenceNo:
+        next?.installmentNo ?? next?.installment_no ?? next?.sequenceNo ?? null,
+      nextInstallmentRemaining: next ? getInstallmentRemaining(next) : null,
+    };
+  }
+
+  return {
+    nextInstallmentDue: formatIsoOrNull(dueDate),
+    nextInstallmentLabel: dueDate ? "Due" : null,
+    nextInstallmentId: null,
+    nextInstallmentSequenceNo: null,
+    nextInstallmentRemaining: null,
+  };
+}
+
+function decorateCreditRow(row, opts = {}) {
+  if (!row) return row;
+
+  const creditMode = normCreditMode(row.creditMode || row.credit_mode);
+  const status = String(row.status || "").toUpperCase();
+
+  const principalAmount =
+    Number(row.principalAmount ?? row.principal_amount ?? row.amount ?? 0) || 0;
+
+  const paidAmount = Number(row.paidAmount ?? row.paid_amount ?? 0) || 0;
+
+  const remainingAmount =
+    Number(
+      row.remainingAmount ??
+        row.remaining_amount ??
+        Math.max(0, principalAmount - paidAmount),
+    ) || 0;
+
+  const dueDate = row.dueDate || row.due_date || null;
+  const installments = Array.isArray(opts.installments)
+    ? opts.installments
+    : [];
+
+  const nextFields = buildNextInstallmentFields({
+    creditMode,
+    installments,
+    dueDate,
+  });
+
+  return {
+    ...row,
+    creditMode,
+    status,
+    principalAmount,
+    paidAmount,
+    remainingAmount,
+    statusLabel: buildCreditStatusLabel(status, creditMode),
+    planSummary: buildPlanSummary({
+      creditMode,
+      installments,
+      dueDate,
+    }),
+    nextInstallmentDue: nextFields.nextInstallmentDue,
+    nextInstallmentLabel: nextFields.nextInstallmentLabel,
+    nextInstallmentId: nextFields.nextInstallmentId,
+    nextInstallmentSequenceNo: nextFields.nextInstallmentSequenceNo,
+    nextInstallmentRemaining: nextFields.nextInstallmentRemaining,
+    remainingBalanceLabel: buildRemainingBalanceLabel(remainingAmount),
+  };
+}
+
 function buildInstallments({
   principalAmount,
   firstDueDate,
@@ -123,7 +295,7 @@ function buildInstallments({
     if (amount <= 0) break;
 
     rows.push({
-      sequenceNo: i + 1,
+      installmentNo: i + 1,
       dueDate: installmentDue,
       amount,
     });
@@ -153,38 +325,40 @@ function buildCollectionMessage({
   remainingAmount,
 }) {
   const mode = normCreditMode(creditMode);
-
-  if (mode === "INSTALLMENT_PLAN") {
-    if (isFinal) {
-      return {
-        label: "INSTALLMENT_FINAL",
-        message: `Final installment payment recorded. Remaining balance: ${remainingAmount}.`,
-      };
-    }
-
-    if (matchedInstallment) {
-      return {
-        label: "INSTALLMENT_PAYMENT",
-        message: `Installment payment recorded. Remaining balance: ${remainingAmount}.`,
-      };
-    }
-
-    return {
-      label: "INSTALLMENT_EXTRA_PAYMENT",
-      message: `Installment-plan payment recorded (${paymentAmount}). Remaining balance: ${remainingAmount}.`,
-    };
-  }
+  const amountText = `${Math.round(Number(paymentAmount || 0))}`;
+  const remainingText = `${Math.max(
+    0,
+    Math.round(Number(remainingAmount || 0)),
+  )}`;
 
   if (isFinal) {
     return {
-      label: "OPEN_BALANCE_FINAL",
-      message: `Final open-balance payment recorded. Remaining balance: ${remainingAmount}.`,
+      label: "FINAL_SETTLEMENT_COMPLETED",
+      shortMessage: "Final settlement completed",
+      detailMessage: `Final settlement completed. Remaining balance: ${remainingText}.`,
+    };
+  }
+
+  if (mode === "INSTALLMENT_PLAN") {
+    if (matchedInstallment) {
+      return {
+        label: "INSTALLMENT_PAYMENT_RECORDED",
+        shortMessage: "Installment payment recorded successfully",
+        detailMessage: `Installment payment recorded successfully. Remaining balance: ${remainingText}.`,
+      };
+    }
+
+    return {
+      label: "INSTALLMENT_PLAN_PAYMENT_RECORDED",
+      shortMessage: "Installment payment recorded successfully",
+      detailMessage: `Installment payment recorded successfully. Amount recorded: ${amountText}. Remaining balance: ${remainingText}.`,
     };
   }
 
   return {
-    label: "OPEN_BALANCE_PARTIAL",
-    message: `Open-balance partial payment recorded. Remaining balance: ${remainingAmount}.`,
+    label: "OPEN_BALANCE_PAYMENT_RECORDED",
+    shortMessage: "Open balance payment recorded successfully",
+    detailMessage: `Open balance payment recorded successfully. Remaining balance: ${remainingText}.`,
   };
 }
 
@@ -319,13 +493,13 @@ async function createCredit({
           locationId,
           creditId: Number(created.id),
           saleId: sid,
-          sequenceNo: row.sequenceNo,
-          dueDate: row.dueDate,
+          installmentNo: row.installmentNo,
           amount: row.amount,
           paidAmount: 0,
+          remainingAmount: row.amount,
+          dueDate: row.dueDate,
           status: "PENDING",
           createdAt: now,
-          updatedAt: now,
         });
       }
     }
@@ -379,7 +553,7 @@ async function createCredit({
       tx,
     });
 
-    return created;
+    return decorateCreditRow(created, { installments: [] });
   });
 }
 
@@ -428,6 +602,8 @@ async function decideCredit({
       throw err;
     }
 
+    const creditMode = normCreditMode(credit.creditMode);
+
     if (dec === "REJECT") {
       await tx
         .update(credits)
@@ -456,10 +632,12 @@ async function decideCredit({
         action: AUDIT.CREDIT_REJECT,
         entity: "credit",
         entityId: id,
-        description: "Credit rejected",
+        description: "Credit request rejected",
         meta: {
           saleId: credit.saleId,
           note: cleanNote,
+          creditMode,
+          message: "Credit request rejected",
         },
       });
 
@@ -470,15 +648,24 @@ async function decideCredit({
         type: "CREDIT_REJECTED",
         title: `Credit rejected (Sale #${credit.saleId})`,
         body: cleanNote
-          ? `Reason: ${cleanNote}`
-          : "Credit request was rejected.",
+          ? `Credit request rejected. Reason: ${cleanNote}`
+          : "Credit request rejected.",
         priority: "normal",
         entity: "credit",
         entityId: Number(id),
         tx,
       });
 
-      return { decision: "REJECT", creditId: id };
+      return {
+        decision: "REJECT",
+        creditId: id,
+        creditMode,
+        status: "REJECTED",
+        statusLabel: buildCreditStatusLabel("REJECTED", creditMode),
+        saleId: Number(credit.saleId),
+        message: "Credit request rejected",
+        detailMessage: "Credit request rejected",
+      };
     }
 
     await tx
@@ -501,16 +688,23 @@ async function decideCredit({
         and(eq(sales.id, credit.saleId), eq(sales.locationId, locationId)),
       );
 
+    const approvalMessage =
+      creditMode === "INSTALLMENT_PLAN"
+        ? "Approved as installment plan"
+        : "Approved as open balance";
+
     await logAudit({
       locationId,
       userId: managerId,
       action: AUDIT.CREDIT_APPROVE,
       entity: "credit",
       entityId: id,
-      description: "Credit approved",
+      description: approvalMessage,
       meta: {
         saleId: credit.saleId,
         note: cleanNote,
+        creditMode,
+        message: approvalMessage,
       },
     });
 
@@ -521,8 +715,8 @@ async function decideCredit({
       type: "CREDIT_APPROVED",
       title: `Credit approved (Sale #${credit.saleId})`,
       body: cleanNote
-        ? `Approved. Note: ${cleanNote}`
-        : "Credit request approved.",
+        ? `${approvalMessage}. Note: ${cleanNote}`
+        : `${approvalMessage}.`,
       priority: "normal",
       entity: "credit",
       entityId: Number(id),
@@ -534,15 +728,27 @@ async function decideCredit({
       roles: ["cashier", "admin"],
       actorUserId: managerId,
       type: "CREDIT_APPROVED_READY_FOR_COLLECTION",
-      title: `Approved credit ready for collection`,
-      body: `Credit #${id} for Sale #${credit.saleId} is approved and may be collected.`,
+      title: "Approved credit ready for collection",
+      body:
+        creditMode === "INSTALLMENT_PLAN"
+          ? `Credit #${id} for Sale #${credit.saleId} is approved as installment plan and may be collected.`
+          : `Credit #${id} for Sale #${credit.saleId} is approved as open balance and may be collected.`,
       priority: "normal",
       entity: "credit",
       entityId: Number(id),
       tx,
     });
 
-    return { decision: "APPROVE", creditId: id };
+    return {
+      decision: "APPROVE",
+      creditId: id,
+      creditMode,
+      status: "APPROVED",
+      statusLabel: buildCreditStatusLabel("APPROVED", creditMode),
+      saleId: Number(credit.saleId),
+      message: approvalMessage,
+      detailMessage: approvalMessage,
+    };
   });
 }
 
@@ -585,17 +791,23 @@ async function recordCreditPayment({
     }
 
     if (!isCollectibleStatus(credit.status)) {
-      const err = new Error("Credit must be approved before collection");
+      const err = new Error("Credit is not yet approved for collection");
       err.code = "NOT_APPROVED";
       err.debug = { status: credit.status };
       throw err;
     }
 
     const remaining = Number(credit.remainingAmount || 0) || 0;
+    const creditMode = normCreditMode(credit.creditMode);
+
     if (payAmount > remaining) {
-      const err = new Error("Payment exceeds remaining balance");
+      const err = new Error(
+        creditMode === "INSTALLMENT_PLAN"
+          ? "Installment payment exceeds credit remaining balance"
+          : "Open balance payment exceeds credit remaining balance",
+      );
       err.code = "OVERPAYMENT";
-      err.debug = { remaining, attempted: payAmount };
+      err.debug = { remaining, attempted: payAmount, creditMode };
       throw err;
     }
 
@@ -642,7 +854,7 @@ async function recordCreditPayment({
 
     let matchedInstallment = null;
 
-    if (normCreditMode(credit.creditMode) === "INSTALLMENT_PLAN") {
+    if (creditMode === "INSTALLMENT_PLAN") {
       if (installmentTargetId) {
         const found = await tx.execute(sql`
           SELECT *
@@ -668,11 +880,28 @@ async function recordCreditPayment({
           WHERE credit_id = ${id}
             AND location_id = ${locationId}
             AND status IN ('PENDING', 'PARTIALLY_PAID', 'OVERDUE')
-          ORDER BY sequence_no ASC
+          ORDER BY installment_no ASC, due_date ASC
           LIMIT 1
         `);
         const foundRows = found?.rows || found || [];
         matchedInstallment = foundRows[0] || null;
+      }
+    }
+
+    if (matchedInstallment) {
+      const installmentRemaining = getInstallmentRemaining(matchedInstallment);
+
+      if (payAmount > installmentRemaining) {
+        const err = new Error(
+          "Installment payment exceeds active installment remaining",
+        );
+        err.code = "INSTALLMENT_OVERPAYMENT";
+        err.debug = {
+          installmentId: Number(matchedInstallment.id),
+          installmentRemaining,
+          attempted: payAmount,
+        };
+        throw err;
       }
     }
 
@@ -696,36 +925,29 @@ async function recordCreditPayment({
       .returning();
 
     if (matchedInstallment) {
-      const installmentRemaining = Math.max(
-        0,
-        Number(matchedInstallment.amount || 0) -
-          Number(
-            matchedInstallment.paid_amount ||
-              matchedInstallment.paidAmount ||
-              0,
-          ),
-      );
-
-      const nextInstallmentPaid =
+      const installmentAmount = Number(matchedInstallment.amount || 0) || 0;
+      const installmentPaidBefore =
         Number(
-          matchedInstallment.paid_amount || matchedInstallment.paidAmount || 0,
-        ) + Math.min(payAmount, installmentRemaining);
-
+          matchedInstallment.paidAmount ?? matchedInstallment.paid_amount ?? 0,
+        ) || 0;
+      const nextInstallmentPaid = installmentPaidBefore + payAmount;
+      const nextInstallmentRemaining = Math.max(
+        0,
+        installmentAmount - nextInstallmentPaid,
+      );
       const nextInstallmentStatus =
-        nextInstallmentPaid >= Number(matchedInstallment.amount || 0)
-          ? "PAID"
-          : "PARTIALLY_PAID";
+        nextInstallmentRemaining === 0 ? "PAID" : "PARTIALLY_PAID";
 
       await tx.execute(sql`
         UPDATE credit_installments
         SET
           paid_amount = ${nextInstallmentPaid},
+          remaining_amount = ${nextInstallmentRemaining},
           status = ${nextInstallmentStatus},
           paid_at = CASE
             WHEN ${nextInstallmentStatus} = 'PAID' THEN ${now}
             ELSE paid_at
-          END,
-          updated_at = ${now}
+          END
         WHERE id = ${Number(matchedInstallment.id)}
       `);
     }
@@ -787,7 +1009,7 @@ async function recordCreditPayment({
       action: AUDIT.CREDIT_SETTLED,
       entity: "credit",
       entityId: id,
-      description: messageMeta.message,
+      description: messageMeta.detailMessage,
       meta: {
         saleId: credit.saleId,
         creditPaymentId: creditPayment.id,
@@ -811,7 +1033,7 @@ async function recordCreditPayment({
       title: isFinal
         ? `Credit settled (Sale #${credit.saleId})`
         : `Credit payment recorded (Sale #${credit.saleId})`,
-      body: messageMeta.message,
+      body: messageMeta.detailMessage,
       priority: "normal",
       entity: "credit",
       entityId: Number(id),
@@ -826,7 +1048,7 @@ async function recordCreditPayment({
       title: isFinal
         ? `Credit settled for Sale #${credit.saleId}`
         : `Credit payment recorded for Sale #${credit.saleId}`,
-      body: messageMeta.message,
+      body: messageMeta.detailMessage,
       priority: "normal",
       entity: "credit",
       entityId: Number(id),
@@ -840,11 +1062,14 @@ async function recordCreditPayment({
       amountRecorded: payAmount,
       paidAmount: nextPaid,
       remainingAmount: nextRemaining,
+      remainingBalanceLabel: buildRemainingBalanceLabel(nextRemaining),
       status: nextStatus,
+      statusLabel: buildCreditStatusLabel(nextStatus, credit.creditMode),
       creditMode: normCreditMode(credit.creditMode),
       installmentId: matchedInstallment ? Number(matchedInstallment.id) : null,
       messageLabel: messageMeta.label,
-      message: messageMeta.message,
+      message: messageMeta.shortMessage,
+      detailMessage: messageMeta.detailMessage,
     };
   });
 }
@@ -874,17 +1099,23 @@ async function listOpenCredits({ locationId, q }) {
       ON cu.id = c.customer_id
      AND cu.location_id = c.location_id
     WHERE c.location_id = ${locationId}
-      AND c.status IN ('PENDING', 'PENDING_APPROVAL', 'APPROVED', 'PARTIALLY_PAID')
+      AND c.status IN ('PENDING', 'PENDING_APPROVAL', 'APPROVED', 'PARTIALLY_PAID', 'SETTLED', 'REJECTED')
       ${
         pattern
-          ? sql`AND (cu.name ILIKE ${pattern} OR cu.phone ILIKE ${pattern})`
+          ? sql`AND (
+              cu.name ILIKE ${pattern}
+              OR cu.phone ILIKE ${pattern}
+              OR CAST(c.id AS TEXT) ILIKE ${pattern}
+              OR CAST(c.sale_id AS TEXT) ILIKE ${pattern}
+            )`
           : sql``
       }
     ORDER BY c.created_at DESC
     LIMIT 50
   `);
 
-  return res?.rows || res || [];
+  const rows = res?.rows || res || [];
+  return rows.map((row) => decorateCreditRow(row, { installments: [] }));
 }
 
 async function getCreditBySale({ locationId, saleId }) {
@@ -900,7 +1131,124 @@ async function getCreditBySale({ locationId, saleId }) {
   `);
 
   const rows = res?.rows || res || [];
-  return rows[0] || null;
+  const row = rows[0] || null;
+  return row ? decorateCreditRow(row, { installments: [] }) : null;
+}
+
+async function getCreditById({ locationId, creditId }) {
+  const id = Number(creditId);
+  if (!Number.isInteger(id) || id <= 0) {
+    const err = new Error("Invalid credit id");
+    err.code = "BAD_CREDIT_ID";
+    throw err;
+  }
+
+  const creditRes = await db.execute(sql`
+    SELECT
+      c.id,
+      c.location_id as "locationId",
+      c.sale_id as "saleId",
+      c.customer_id as "customerId",
+      cu.name as "customerName",
+      cu.phone as "customerPhone",
+      c.principal_amount as "principalAmount",
+      c.paid_amount as "paidAmount",
+      c.remaining_amount as "remainingAmount",
+      c.credit_mode as "creditMode",
+      c.due_date as "dueDate",
+      c.status,
+      c.note,
+      c.created_by as "createdBy",
+      c.approved_by as "approvedBy",
+      c.approved_at as "approvedAt",
+      c.rejected_by as "rejectedBy",
+      c.rejected_at as "rejectedAt",
+      c.settled_by as "settledBy",
+      c.settled_at as "settledAt",
+      c.created_at as "createdAt"
+    FROM credits c
+    LEFT JOIN customers cu
+      ON cu.id = c.customer_id
+     AND cu.location_id = c.location_id
+    WHERE c.location_id = ${locationId}
+      AND c.id = ${id}
+    LIMIT 1
+  `);
+
+  const creditRows = creditRes?.rows || creditRes || [];
+  const rawCredit = creditRows[0];
+
+  if (!rawCredit) {
+    const err = new Error("Credit not found");
+    err.code = "NOT_FOUND";
+    throw err;
+  }
+
+  const installmentsRes = await db.execute(sql`
+    SELECT
+      id,
+      installment_no as "installmentNo",
+      amount,
+      paid_amount as "paidAmount",
+      remaining_amount as "remainingAmount",
+      due_date as "dueDate",
+      status,
+      paid_at as "paidAt",
+      note,
+      created_at as "createdAt"
+    FROM credit_installments
+    WHERE location_id = ${locationId}
+      AND credit_id = ${id}
+    ORDER BY installment_no ASC, id ASC
+  `);
+
+  const paymentsRes = await db.execute(sql`
+    SELECT
+      cp.id,
+      cp.amount,
+      cp.method,
+      cp.reference,
+      cp.note,
+      cp.created_at as "createdAt",
+      ci.installment_no as "installmentSequenceNo"
+    FROM credit_payments cp
+    LEFT JOIN credit_installments ci
+      ON ci.id = cp.installment_id
+    WHERE cp.location_id = ${locationId}
+      AND cp.credit_id = ${id}
+    ORDER BY cp.created_at DESC
+  `);
+
+  const itemsRes = await db.execute(sql`
+    SELECT
+      si.id,
+      si.product_id as "productId",
+      COALESCE(p.name, si.product_name) as "productName",
+      COALESCE(p.sku, si.sku) as sku,
+      si.qty,
+      si.unit_price as "unitPrice",
+      si.line_total as "lineTotal"
+    FROM sale_items si
+    LEFT JOIN products p
+      ON p.id = si.product_id
+     AND p.location_id = si.location_id
+    WHERE si.location_id = ${locationId}
+      AND si.sale_id = ${Number(rawCredit.saleId)}
+    ORDER BY si.id ASC
+  `);
+
+  const installments = installmentsRes?.rows || installmentsRes || [];
+  const payments = paymentsRes?.rows || paymentsRes || [];
+  const items = itemsRes?.rows || itemsRes || [];
+
+  const credit = decorateCreditRow(rawCredit, { installments });
+
+  return {
+    ...credit,
+    items,
+    payments,
+    installments,
+  };
 }
 
 module.exports = {
@@ -911,4 +1259,5 @@ module.exports = {
   settleCredit: recordCreditPayment,
   listOpenCredits,
   getCreditBySale,
+  getCreditById,
 };

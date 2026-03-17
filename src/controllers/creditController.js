@@ -16,14 +16,6 @@ function toInt(v, def = null) {
 
 /**
  * POST /credits
- * Body:
- * {
- *   saleId,
- *   creditMode?,
- *   dueDate?,
- *   note?,
- *   installments?
- * }
  */
 async function createCredit(request, reply) {
   const parsed = createCreditSchema.safeParse(request.body || {});
@@ -43,6 +35,9 @@ async function createCredit(request, reply) {
       dueDate: parsed.data.dueDate,
       note: parsed.data.note,
       installments: parsed.data.installments,
+      installmentCount: parsed.data.installmentCount,
+      installmentAmount: parsed.data.installmentAmount,
+      firstInstallmentDate: parsed.data.firstInstallmentDate,
     });
 
     return reply.send({ ok: true, credit });
@@ -78,7 +73,8 @@ async function createCredit(request, reply) {
     if (
       e.code === "BAD_INSTALLMENTS" ||
       e.code === "INSTALLMENT_SUM_MISMATCH" ||
-      e.code === "BAD_CREDIT_MODE"
+      e.code === "BAD_CREDIT_MODE" ||
+      e.code === "BAD_INSTALLMENT_PLAN"
     ) {
       return reply.status(400).send({
         error: e.message || "Invalid installment plan",
@@ -103,7 +99,6 @@ async function createCredit(request, reply) {
 
 /**
  * PATCH /credits/:id/decision
- * Body: { decision: "APPROVE" | "REJECT", note? }
  */
 async function approveCredit(request, reply) {
   const creditId = toInt(request.params.id, null);
@@ -163,7 +158,6 @@ async function approveCredit(request, reply) {
 
 /**
  * PATCH /credits/:id/payment
- * Body: { amount, method, note?, cashSessionId?, reference? }
  */
 async function recordCreditPayment(request, reply) {
   const creditId = toInt(request.params.id, null);
@@ -189,6 +183,7 @@ async function recordCreditPayment(request, reply) {
       note: parsed.data.note,
       reference: parsed.data.reference,
       cashSessionId: parsed.data.cashSessionId,
+      installmentId: parsed.data.installmentId,
     });
 
     return reply.send({ ok: true, ...out });
@@ -212,7 +207,23 @@ async function recordCreditPayment(request, reply) {
 
     if (e.code === "BAD_STATUS" || e.code === "NOT_APPROVED") {
       return reply.status(409).send({
-        error: e.message || "Credit is not collectible",
+        error: e.message || "Credit is not yet approved for collection",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "INSTALLMENT_NOT_FOUND") {
+      return reply.status(404).send({
+        error: e.message || "Installment not found",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "INSTALLMENT_OVERPAYMENT") {
+      return reply.status(409).send({
+        error:
+          e.message ||
+          "Installment payment exceeds active installment remaining",
         debug: e.debug,
       });
     }
