@@ -258,11 +258,11 @@ async function listCustomers({ locationId, limit = 50, cursor = null }) {
       ), 0) as "salesTotalAmount",
 
       COALESCE((
-        SELECT SUM(cr.amount)::bigint
+        SELECT SUM(cr.remaining_amount)::bigint
         FROM credits cr
         WHERE cr.customer_id = c.id
           AND cr.location_id = c.location_id
-          AND cr.status NOT IN ('SETTLED', 'CANCELLED')
+          AND cr.status NOT IN ('SETTLED', 'REJECTED', 'CANCELLED')
       ), 0) as "openCreditAmount",
 
       (

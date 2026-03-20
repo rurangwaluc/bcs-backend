@@ -33,7 +33,7 @@ function toLocationObj(row) {
 function buildFilters({ locationId, status, sellerId, q, dateFrom, dateTo }) {
   const parsedLocationId = toInt(locationId, null);
   const parsedSellerId = toInt(sellerId, null);
-  const pattern = q ? `%${String(q)}%` : null;
+  const pattern = q ? `%${String(q).trim()}%` : null;
 
   const dateFromTs = dateFrom ? new Date(dateFrom) : null;
   const dateToTs = dateTo ? new Date(dateTo) : null;
@@ -229,7 +229,10 @@ async function listOwnerSales(filters = {}) {
 
       cr.id as "creditId",
       cr.status as "creditStatus",
-      cr.amount::int as "creditAmount",
+      cr.principal_amount::int as "creditAmount",
+      cr.paid_amount::int as "creditPaidAmount",
+      cr.remaining_amount::int as "creditRemainingAmount",
+      cr.credit_mode as "creditMode",
       cr.created_at as "creditCreatedAt",
       cr.settled_at as "creditSettledAt",
 
@@ -251,7 +254,10 @@ async function listOwnerSales(filters = {}) {
       SELECT
         c2.id,
         c2.status,
-        c2.amount,
+        c2.principal_amount,
+        c2.paid_amount,
+        c2.remaining_amount,
+        c2.credit_mode,
         c2.created_at,
         c2.settled_at
       FROM credits c2
@@ -270,7 +276,8 @@ async function listOwnerSales(filters = {}) {
           pr.sku as "sku"
         FROM sale_items si
         LEFT JOIN products pr
-          ON pr.id = si.product_id AND pr.location_id = s.location_id
+          ON pr.id = si.product_id
+         AND pr.location_id = s.location_id
         WHERE si.sale_id = s.id
         ORDER BY si.id ASC
         LIMIT 3
@@ -312,9 +319,12 @@ async function listOwnerSales(filters = {}) {
           id: r.creditId,
           status: r.creditStatus,
           amount: Number(r.creditAmount || 0),
+          principalAmount: Number(r.creditAmount || 0),
+          paidAmount: Number(r.creditPaidAmount || 0),
+          remainingAmount: Number(r.creditRemainingAmount || 0),
+          creditMode: r.creditMode || "OPEN_BALANCE",
           createdAt: r.creditCreatedAt,
           settledAt: r.creditSettledAt,
-          paidAmount: Number(r.amountPaid || 0),
         }
       : null;
 
@@ -324,6 +334,9 @@ async function listOwnerSales(filters = {}) {
       creditId,
       creditStatus,
       creditAmount,
+      creditPaidAmount,
+      creditRemainingAmount,
+      creditMode,
       creditCreatedAt,
       creditSettledAt,
       ...clean

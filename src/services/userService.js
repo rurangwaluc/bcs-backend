@@ -422,4 +422,55 @@ async function deactivateUser({ adminUser, targetUserId }) {
   });
 }
 
-module.exports = { createUser, listUsers, updateUser, deactivateUser };
+async function resetUserPassword({ adminUser, targetUserId, password }) {
+  const before = await getRawUserForActor({
+    actorUser: adminUser,
+    userId: targetUserId,
+  });
+
+  if (!before) {
+    const err = new Error("User not found");
+    err.code = "NOT_FOUND";
+    throw err;
+  }
+
+  if (before.role === ROLES.OWNER && !isOwner(adminUser)) {
+    const err = new Error("Only owner can reset owner passwords");
+    err.code = "OWNER_ONLY";
+    throw err;
+  }
+
+  const passwordHash = hashPassword(password);
+
+  await db
+    .update(users)
+    .set({
+      passwordHash,
+    })
+    .where(eq(users.id, targetUserId));
+
+  await safeLogAudit({
+    locationId: before.locationId,
+    userId: adminUser.id,
+    action: AUDIT.USER_UPDATE,
+    entity: "user",
+    entityId: targetUserId,
+    description: `Reset password for ${before.email}`,
+    meta: {
+      email: before.email,
+      role: before.role,
+      locationId: before.locationId,
+      passwordReset: true,
+    },
+  });
+
+  return true;
+}
+
+module.exports = {
+  createUser,
+  listUsers,
+  updateUser,
+  resetUserPassword,
+  deactivateUser,
+};

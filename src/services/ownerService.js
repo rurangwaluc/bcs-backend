@@ -32,12 +32,39 @@ function normalizeCode(value) {
     .toUpperCase();
 }
 
+function normalizeOptionalText(value, max = 255) {
+  if (value == null) return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  return s.slice(0, max);
+}
+
+function normalizeOptionalUrl(value, max = 500) {
+  const s = normalizeOptionalText(value, max);
+  return s || null;
+}
+
+function normalizeBankAccounts(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 function baseLocationSelect() {
   return {
     id: locations.id,
     name: locations.name,
     code: locations.code,
     status: locations.status,
+
+    email: locations.email,
+    phone: locations.phone,
+    website: locations.website,
+    logoUrl: locations.logoUrl,
+
+    address: locations.address,
+    tin: locations.tin,
+    momoCode: locations.momoCode,
+    bankAccounts: locations.bankAccounts,
+
     openedAt: locations.openedAt,
     closedAt: locations.closedAt,
     archivedAt: locations.archivedAt,
@@ -224,6 +251,17 @@ async function createLocation({ actorUser, data }) {
       name,
       code,
       status: LOCATION_STATUS.ACTIVE,
+
+      email: normalizeOptionalText(data.email, 160),
+      phone: normalizeOptionalText(data.phone, 40),
+      website: normalizeOptionalUrl(data.website, 200),
+      logoUrl: normalizeOptionalUrl(data.logoUrl, 500),
+
+      address: normalizeOptionalText(data.address, 255),
+      tin: normalizeOptionalText(data.tin, 64),
+      momoCode: normalizeOptionalText(data.momoCode, 64),
+      bankAccounts: normalizeBankAccounts(data.bankAccounts),
+
       openedAt: new Date(),
       updatedAt: new Date(),
     })
@@ -240,6 +278,10 @@ async function createLocation({ actorUser, data }) {
       name,
       code,
       status: LOCATION_STATUS.ACTIVE,
+      email: normalizeOptionalText(data.email, 160),
+      phone: normalizeOptionalText(data.phone, 40),
+      website: normalizeOptionalUrl(data.website, 200),
+      logoUrl: normalizeOptionalUrl(data.logoUrl, 500),
     },
   });
 
@@ -263,6 +305,38 @@ async function updateLocation({ actorUser, locationId, data }) {
     updates.code = normalizedCode;
   }
 
+  if (data.email !== undefined) {
+    updates.email = normalizeOptionalText(data.email, 160);
+  }
+
+  if (data.phone !== undefined) {
+    updates.phone = normalizeOptionalText(data.phone, 40);
+  }
+
+  if (data.website !== undefined) {
+    updates.website = normalizeOptionalUrl(data.website, 200);
+  }
+
+  if (data.logoUrl !== undefined) {
+    updates.logoUrl = normalizeOptionalUrl(data.logoUrl, 500);
+  }
+
+  if (data.address !== undefined) {
+    updates.address = normalizeOptionalText(data.address, 255);
+  }
+
+  if (data.tin !== undefined) {
+    updates.tin = normalizeOptionalText(data.tin, 64);
+  }
+
+  if (data.momoCode !== undefined) {
+    updates.momoCode = normalizeOptionalText(data.momoCode, 64);
+  }
+
+  if (data.bankAccounts !== undefined) {
+    updates.bankAccounts = normalizeBankAccounts(data.bankAccounts);
+  }
+
   const [updated] = await db
     .update(locations)
     .set(updates)
@@ -280,12 +354,20 @@ async function updateLocation({ actorUser, locationId, data }) {
       before: {
         name: location.name,
         code: location.code,
-        status: location.status,
+        email: location.email,
+        phone: location.phone,
+        website: location.website,
+        logoUrl: location.logoUrl,
       },
       after: {
         name: updates.name ?? location.name,
         code: updates.code ?? location.code,
-        status: location.status,
+        email: updates.email !== undefined ? updates.email : location.email,
+        phone: updates.phone !== undefined ? updates.phone : location.phone,
+        website:
+          updates.website !== undefined ? updates.website : location.website,
+        logoUrl:
+          updates.logoUrl !== undefined ? updates.logoUrl : location.logoUrl,
       },
     },
   });

@@ -7,6 +7,11 @@ const {
 
 const ownerCreditService = require("../services/ownerCreditService");
 
+function toInt(v, def = null) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : def;
+}
+
 async function getOwnerCreditsSummary(request, reply) {
   try {
     const summary = await ownerCreditService.getOwnerCreditsSummary({
@@ -50,7 +55,7 @@ async function listOwnerCredits(request, reply) {
 }
 
 async function getOwnerCredit(request, reply) {
-  const creditId = Number(request.params.id);
+  const creditId = toInt(request.params.id, null);
   if (!Number.isInteger(creditId) || creditId <= 0) {
     return reply.status(400).send({ error: "Invalid credit id" });
   }
@@ -72,7 +77,7 @@ async function getOwnerCredit(request, reply) {
 }
 
 async function ownerDecideCredit(request, reply) {
-  const creditId = Number(request.params.id);
+  const creditId = toInt(request.params.id, null);
   if (!Number.isInteger(creditId) || creditId <= 0) {
     return reply.status(400).send({ error: "Invalid credit id" });
   }
@@ -95,12 +100,26 @@ async function ownerDecideCredit(request, reply) {
 
     return reply.send({ ok: true, ...out });
   } catch (e) {
+    if (e.code === "BAD_CREDIT_ID") {
+      return reply.status(400).send({ error: "Invalid credit id" });
+    }
+
+    if (e.code === "BAD_DECISION") {
+      return reply.status(400).send({
+        error: e.message || "Invalid decision",
+        debug: e.debug,
+      });
+    }
+
     if (e.code === "NOT_FOUND") {
       return reply.status(404).send({ error: "Credit not found" });
     }
 
     if (e.code === "BAD_STATUS") {
-      return reply.status(409).send({ error: e.message, debug: e.debug });
+      return reply.status(409).send({
+        error: e.message || "Credit cannot be processed from current status",
+        debug: e.debug,
+      });
     }
 
     request.log.error({ err: e }, "ownerDecideCredit failed");
@@ -112,7 +131,7 @@ async function ownerDecideCredit(request, reply) {
 }
 
 async function ownerSettleCredit(request, reply) {
-  const creditId = Number(request.params.id);
+  const creditId = toInt(request.params.id, null);
   if (!Number.isInteger(creditId) || creditId <= 0) {
     return reply.status(400).send({ error: "Invalid credit id" });
   }
@@ -129,27 +148,65 @@ async function ownerSettleCredit(request, reply) {
     const out = await ownerCreditService.ownerSettleCredit({
       actorUserId: request.user.id,
       creditId,
+      amount: parsed.data.amount,
       method: parsed.data.method,
       note: parsed.data.note,
+      reference: parsed.data.reference,
       cashSessionId: parsed.data.cashSessionId,
+      installmentId: parsed.data.installmentId,
     });
 
     return reply.send({ ok: true, ...out });
   } catch (e) {
+    if (e.code === "BAD_CREDIT_ID") {
+      return reply.status(400).send({ error: "Invalid credit id" });
+    }
+
+    if (e.code === "BAD_AMOUNT") {
+      return reply.status(400).send({
+        error: e.message || "Invalid amount",
+        debug: e.debug,
+      });
+    }
+
     if (e.code === "NOT_FOUND") {
       return reply.status(404).send({ error: "Credit not found" });
     }
 
-    if (e.code === "NOT_APPROVED") {
-      return reply.status(409).send({ error: e.message, debug: e.debug });
+    if (e.code === "BAD_STATUS" || e.code === "NOT_APPROVED") {
+      return reply.status(409).send({
+        error: e.message || "Credit is not yet approved for collection",
+        debug: e.debug,
+      });
     }
 
-    if (e.code === "DUPLICATE_PAYMENT") {
-      return reply.status(409).send({ error: e.message });
+    if (e.code === "INSTALLMENT_NOT_FOUND") {
+      return reply.status(404).send({
+        error: e.message || "Installment not found",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "INSTALLMENT_OVERPAYMENT") {
+      return reply.status(409).send({
+        error:
+          e.message ||
+          "Installment payment exceeds active installment remaining",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "OVERPAYMENT") {
+      return reply.status(409).send({
+        error: e.message || "Payment exceeds remaining balance",
+        debug: e.debug,
+      });
     }
 
     if (e.code === "NO_OPEN_SESSION") {
-      return reply.status(409).send({ error: "No open cash session" });
+      return reply.status(409).send({
+        error: "No open cash session",
+      });
     }
 
     request.log.error({ err: e }, "ownerSettleCredit failed");

@@ -1,6 +1,7 @@
 const {
   createUserSchema,
   updateUserSchema,
+  resetUserPasswordSchema,
 } = require("../validators/users.schema");
 const userService = require("../services/userService");
 
@@ -106,6 +107,40 @@ async function updateUser(request, reply) {
   }
 }
 
+async function resetUserPassword(request, reply) {
+  const userId = Number(request.params.id);
+  if (!userId) return reply.status(400).send({ error: "Invalid user id" });
+
+  const parsed = resetUserPasswordSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply
+      .status(400)
+      .send({ error: "Invalid payload", details: parsed.error.flatten() });
+  }
+
+  try {
+    await userService.resetUserPassword({
+      adminUser: request.user,
+      targetUserId: userId,
+      password: parsed.data.password,
+    });
+
+    return reply.send({ ok: true });
+  } catch (e) {
+    if (e.code === "NOT_FOUND") {
+      return reply.status(404).send({ error: "User not found" });
+    }
+    if (e.code === "OWNER_ONLY") {
+      return reply
+        .status(403)
+        .send({ error: "Only owner can reset owner passwords" });
+    }
+
+    request.log.error(e);
+    return reply.status(500).send({ error: "Internal Server Error" });
+  }
+}
+
 async function deleteUser(request, reply) {
   const userId = Number(request.params.id);
   if (!userId) {
@@ -139,4 +174,10 @@ async function deleteUser(request, reply) {
   }
 }
 
-module.exports = { createUser, listUsers, updateUser, deleteUser };
+module.exports = {
+  createUser,
+  listUsers,
+  updateUser,
+  resetUserPassword,
+  deleteUser,
+};

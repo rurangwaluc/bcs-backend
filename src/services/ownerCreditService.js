@@ -14,6 +14,11 @@ function toInt(v, def = null) {
   return Number.isFinite(n) ? Math.trunc(n) : def;
 }
 
+function toNumber(v, def = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
+}
+
 function clampLimit(n, def = 50, max = 200) {
   const x = toInt(n, def);
   if (!Number.isInteger(x) || x <= 0) return def;
@@ -24,60 +29,236 @@ function normalizeStatus(v) {
   const s = String(v || "")
     .trim()
     .toUpperCase();
-  if (["PENDING", "APPROVED", "REJECTED", "SETTLED"].includes(s)) {
+
+  if (
+    [
+      "PENDING",
+      "PENDING_APPROVAL",
+      "APPROVED",
+      "PARTIALLY_PAID",
+      "REJECTED",
+      "SETTLED",
+    ].includes(s)
+  ) {
     return s;
   }
+
   return "";
+}
+
+function normalizeCreditMode(v) {
+  const s = String(v || "")
+    .trim()
+    .toUpperCase();
+
+  return s || "OPEN_BALANCE";
+}
+
+function buildCreditStatusLabel(status, creditMode) {
+  const st = String(status || "")
+    .trim()
+    .toUpperCase();
+  const mode = normalizeCreditMode(creditMode);
+
+  if (st === "PENDING" || st === "PENDING_APPROVAL") {
+    return "Pending approval";
+  }
+
+  if (st === "APPROVED") {
+    return mode === "INSTALLMENT_PLAN"
+      ? "Approved as installment plan"
+      : "Approved as open balance";
+  }
+
+  if (st === "PARTIALLY_PAID") {
+    return "Partially paid";
+  }
+
+  if (st === "SETTLED") {
+    return "Settled";
+  }
+
+  if (st === "REJECTED") {
+    return "Credit request rejected";
+  }
+
+  return st || "—";
+}
+
+function formatDateOnly(value) {
+  if (!value) return null;
+
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function buildRemainingBalanceLabel(remainingAmount) {
+  const n = Math.max(0, Math.round(toNumber(remainingAmount, 0)));
+  return `${n.toLocaleString()} RWF remaining`;
+}
+
+function buildPlanSummary({
+  creditMode,
+  dueDate,
+  installmentCount,
+  nextInstallmentDue,
+}) {
+  const mode = normalizeCreditMode(creditMode);
+
+  if (mode === "INSTALLMENT_PLAN") {
+    const count = toInt(installmentCount, 0);
+    const nextDue = formatDateOnly(nextInstallmentDue || dueDate);
+
+    if (count > 0 && nextDue) {
+      return `${count} installment${count === 1 ? "" : "s"} • next due ${nextDue}`;
+    }
+
+    if (count > 0) {
+      return `${count} installment${count === 1 ? "" : "s"}`;
+    }
+
+    if (nextDue) {
+      return `Installment plan • next due ${nextDue}`;
+    }
+
+    return "Installment plan";
+  }
+
+  const due = formatDateOnly(dueDate);
+  return due ? `Open balance • due ${due}` : "Open balance";
+}
+
+function decorateCreditShape(row) {
+  if (!row) return null;
+
+  const principalAmount = toNumber(
+    row.principalAmount ?? row.principal_amount ?? row.amount,
+    0,
+  );
+  const paidAmount = toNumber(row.paidAmount ?? row.paid_amount, 0);
+  const remainingAmount = toNumber(
+    row.remainingAmount ?? row.remaining_amount,
+    Math.max(0, principalAmount - paidAmount),
+  );
+  const creditMode = normalizeCreditMode(row.creditMode ?? row.credit_mode);
+  const status = normalizeStatus(row.status) || String(row.status || "");
+  const dueDate = row.dueDate ?? row.due_date ?? null;
+  const nextInstallmentDue =
+    row.nextInstallmentDue ?? row.next_installment_due ?? null;
+  const installmentCount = toInt(
+    row.installmentCount ?? row.installment_count,
+    0,
+  );
+
+  const statusLabel =
+    row.statusLabel ??
+    row.status_label ??
+    buildCreditStatusLabel(status, creditMode);
+
+  const planSummary =
+    row.planSummary ??
+    row.plan_summary ??
+    buildPlanSummary({
+      creditMode,
+      dueDate,
+      installmentCount,
+      nextInstallmentDue,
+    });
+
+  const remainingBalanceLabel =
+    row.remainingBalanceLabel ??
+    row.remaining_balance_label ??
+    buildRemainingBalanceLabel(remainingAmount);
+
+  return {
+    ...row,
+    principalAmount,
+    paidAmount,
+    remainingAmount,
+    amount: principalAmount,
+    creditMode,
+    status,
+    statusLabel,
+    planSummary,
+    nextInstallmentDue,
+    remainingBalanceLabel,
+  };
 }
 
 function normalizeCreditRow(r) {
   if (!r) return null;
 
+  const decorated = decorateCreditShape(r);
+
   return {
-    id: toInt(r.id, null),
+    id: toInt(decorated.id, null),
     location: {
-      id: String(toInt(r.locationId ?? r.location_id, null) || ""),
-      name: r.locationName ?? r.location_name ?? null,
-      code: r.locationCode ?? r.location_code ?? null,
-      status: r.locationStatus ?? r.location_status ?? null,
+      id: String(
+        toInt(decorated.locationId ?? decorated.location_id, null) || "",
+      ),
+      name: decorated.locationName ?? decorated.location_name ?? null,
+      code: decorated.locationCode ?? decorated.location_code ?? null,
+      status: decorated.locationStatus ?? decorated.location_status ?? null,
     },
-    saleId: toInt(r.saleId ?? r.sale_id, null),
-    customerId: toInt(r.customerId ?? r.customer_id, null),
-    customerName: r.customerName ?? r.customer_name ?? null,
-    customerPhone: r.customerPhone ?? r.customer_phone ?? null,
-    amount: Number(r.amount ?? 0) || 0,
-    status: r.status ?? null,
+    saleId: toInt(decorated.saleId ?? decorated.sale_id, null),
+    customerId: toInt(decorated.customerId ?? decorated.customer_id, null),
+    customerName: decorated.customerName ?? decorated.customer_name ?? null,
+    customerPhone: decorated.customerPhone ?? decorated.customer_phone ?? null,
+    principalAmount: toNumber(decorated.principalAmount, 0),
+    paidAmount: toNumber(decorated.paidAmount, 0),
+    remainingAmount: toNumber(decorated.remainingAmount, 0),
+    amount: toNumber(decorated.amount, 0),
+    creditMode: decorated.creditMode,
+    status: decorated.status ?? null,
+    statusLabel: decorated.statusLabel ?? null,
+    planSummary: decorated.planSummary ?? null,
+    nextInstallmentDue: decorated.nextInstallmentDue ?? null,
+    remainingBalanceLabel: decorated.remainingBalanceLabel ?? null,
     createdBy: toInt(
-      r.createdBy ?? r.created_by ?? r.created_by_user_id ?? r.createdByUserId,
+      decorated.createdBy ??
+        decorated.created_by ??
+        decorated.created_by_user_id ??
+        decorated.createdByUserId,
       null,
     ),
-    createdByName: r.createdByName ?? r.created_by_name ?? null,
+    createdByName: decorated.createdByName ?? decorated.created_by_name ?? null,
     approvedBy: toInt(
-      r.approvedBy ??
-        r.approved_by ??
-        r.approved_by_user_id ??
-        r.approvedByUserId,
+      decorated.approvedBy ??
+        decorated.approved_by ??
+        decorated.approved_by_user_id ??
+        decorated.approvedByUserId,
       null,
     ),
-    approvedByName: r.approvedByName ?? r.approved_by_name ?? null,
+    approvedByName:
+      decorated.approvedByName ?? decorated.approved_by_name ?? null,
     rejectedBy: toInt(
-      r.rejectedBy ??
-        r.rejected_by ??
-        r.rejected_by_user_id ??
-        r.rejectedByUserId,
+      decorated.rejectedBy ??
+        decorated.rejected_by ??
+        decorated.rejected_by_user_id ??
+        decorated.rejectedByUserId,
       null,
     ),
-    rejectedByName: r.rejectedByName ?? r.rejected_by_name ?? null,
+    rejectedByName:
+      decorated.rejectedByName ?? decorated.rejected_by_name ?? null,
     settledBy: toInt(
-      r.settledBy ?? r.settled_by ?? r.settled_by_user_id ?? r.settledByUserId,
+      decorated.settledBy ??
+        decorated.settled_by ??
+        decorated.settled_by_user_id ??
+        decorated.settledByUserId,
       null,
     ),
-    settledByName: r.settledByName ?? r.settled_by_name ?? null,
-    approvedAt: r.approvedAt ?? r.approved_at ?? null,
-    rejectedAt: r.rejectedAt ?? r.rejected_at ?? null,
-    settledAt: r.settledAt ?? r.settled_at ?? null,
-    createdAt: r.createdAt ?? r.created_at ?? null,
-    note: r.note ?? null,
+    settledByName: decorated.settledByName ?? decorated.settled_by_name ?? null,
+    approvedAt: decorated.approvedAt ?? decorated.approved_at ?? null,
+    rejectedAt: decorated.rejectedAt ?? decorated.rejected_at ?? null,
+    settledAt: decorated.settledAt ?? decorated.settled_at ?? null,
+    createdAt: decorated.createdAt ?? decorated.created_at ?? null,
+    dueDate: decorated.dueDate ?? decorated.due_date ?? null,
+    note: decorated.note ?? null,
   };
 }
 
@@ -120,29 +301,42 @@ async function getOwnerCreditsSummary({
     SELECT
       COUNT(DISTINCT c.location_id)::int as "branchesCount",
       COUNT(*)::int as "creditsCount",
-      COALESCE(SUM(c.amount), 0)::bigint as "totalAmount",
+      COALESCE(SUM(c.principal_amount), 0)::bigint as "totalAmount",
 
-      COUNT(*) FILTER (WHERE c.status = 'PENDING')::int as "pendingCount",
-      COALESCE(SUM(c.amount) FILTER (WHERE c.status = 'PENDING'), 0)::bigint as "pendingAmount",
+      COUNT(*) FILTER (WHERE c.status IN ('PENDING', 'PENDING_APPROVAL'))::int as "pendingCount",
+      COALESCE(SUM(c.principal_amount) FILTER (WHERE c.status IN ('PENDING', 'PENDING_APPROVAL')), 0)::bigint as "pendingAmount",
 
-      COUNT(*) FILTER (WHERE c.status = 'APPROVED')::int as "approvedCount",
-      COALESCE(SUM(c.amount) FILTER (WHERE c.status = 'APPROVED'), 0)::bigint as "approvedAmount",
+      COUNT(*) FILTER (WHERE c.status IN ('APPROVED', 'PARTIALLY_PAID'))::int as "approvedCount",
+      COALESCE(SUM(c.remaining_amount) FILTER (WHERE c.status IN ('APPROVED', 'PARTIALLY_PAID')), 0)::bigint as "approvedAmount",
 
       COUNT(*) FILTER (WHERE c.status = 'REJECTED')::int as "rejectedCount",
-      COALESCE(SUM(c.amount) FILTER (WHERE c.status = 'REJECTED'), 0)::bigint as "rejectedAmount",
+      COALESCE(SUM(c.principal_amount) FILTER (WHERE c.status = 'REJECTED'), 0)::bigint as "rejectedAmount",
 
       COUNT(*) FILTER (WHERE c.status = 'SETTLED')::int as "settledCount",
-      COALESCE(SUM(c.amount) FILTER (WHERE c.status = 'SETTLED'), 0)::bigint as "settledAmount"
+      COALESCE(SUM(c.paid_amount) FILTER (WHERE c.status = 'SETTLED'), 0)::bigint as "settledAmount"
     FROM credits c
     LEFT JOIN customers cu
       ON cu.id = c.customer_id
      AND cu.location_id = c.location_id
     WHERE 1 = 1
       ${parsedLocationId ? sql`AND c.location_id = ${parsedLocationId}` : sql``}
-      ${normalizedStatus ? sql`AND c.status = ${normalizedStatus}` : sql``}
+      ${
+        normalizedStatus
+          ? normalizedStatus === "PENDING_APPROVAL"
+            ? sql`AND c.status IN ('PENDING', 'PENDING_APPROVAL')`
+            : normalizedStatus === "PARTIALLY_PAID"
+              ? sql`AND c.status = 'PARTIALLY_PAID'`
+              : sql`AND c.status = ${normalizedStatus}`
+          : sql``
+      }
       ${
         pattern
-          ? sql`AND (cu.name ILIKE ${pattern} OR cu.phone ILIKE ${pattern} OR CAST(c.sale_id AS TEXT) ILIKE ${pattern})`
+          ? sql`AND (
+              cu.name ILIKE ${pattern}
+              OR cu.phone ILIKE ${pattern}
+              OR CAST(c.id AS TEXT) ILIKE ${pattern}
+              OR CAST(c.sale_id AS TEXT) ILIKE ${pattern}
+            )`
           : sql``
       }
       ${dateFromTs ? sql`AND c.created_at >= ${dateFromTs}` : sql``}
@@ -156,19 +350,31 @@ async function getOwnerCreditsSummary({
       l.code as "locationCode",
       l.status as "locationStatus",
       COUNT(c.id)::int as "creditsCount",
-      COALESCE(SUM(c.amount), 0)::bigint as "totalAmount",
-      COUNT(*) FILTER (WHERE c.status = 'PENDING')::int as "pendingCount",
-      COALESCE(SUM(c.amount) FILTER (WHERE c.status = 'PENDING'), 0)::bigint as "pendingAmount",
-      COUNT(*) FILTER (WHERE c.status = 'APPROVED')::int as "approvedCount",
-      COALESCE(SUM(c.amount) FILTER (WHERE c.status = 'APPROVED'), 0)::bigint as "approvedAmount",
-      COUNT(*) FILTER (WHERE c.status = 'REJECTED')::int as "rejectedCount",
-      COALESCE(SUM(c.amount) FILTER (WHERE c.status = 'REJECTED'), 0)::bigint as "rejectedAmount",
-      COUNT(*) FILTER (WHERE c.status = 'SETTLED')::int as "settledCount",
-      COALESCE(SUM(c.amount) FILTER (WHERE c.status = 'SETTLED'), 0)::bigint as "settledAmount"
+      COALESCE(SUM(c.principal_amount), 0)::bigint as "totalAmount",
+
+      COUNT(c.id) FILTER (WHERE c.status IN ('PENDING', 'PENDING_APPROVAL'))::int as "pendingCount",
+      COALESCE(SUM(c.principal_amount) FILTER (WHERE c.status IN ('PENDING', 'PENDING_APPROVAL')), 0)::bigint as "pendingAmount",
+
+      COUNT(c.id) FILTER (WHERE c.status IN ('APPROVED', 'PARTIALLY_PAID'))::int as "approvedCount",
+      COALESCE(SUM(c.remaining_amount) FILTER (WHERE c.status IN ('APPROVED', 'PARTIALLY_PAID')), 0)::bigint as "approvedAmount",
+
+      COUNT(c.id) FILTER (WHERE c.status = 'REJECTED')::int as "rejectedCount",
+      COALESCE(SUM(c.principal_amount) FILTER (WHERE c.status = 'REJECTED'), 0)::bigint as "rejectedAmount",
+
+      COUNT(c.id) FILTER (WHERE c.status = 'SETTLED')::int as "settledCount",
+      COALESCE(SUM(c.paid_amount) FILTER (WHERE c.status = 'SETTLED'), 0)::bigint as "settledAmount"
     FROM locations l
     LEFT JOIN credits c
       ON c.location_id = l.id
-      ${normalizedStatus ? sql`AND c.status = ${normalizedStatus}` : sql``}
+      ${
+        normalizedStatus
+          ? normalizedStatus === "PENDING_APPROVAL"
+            ? sql`AND c.status IN ('PENDING', 'PENDING_APPROVAL')`
+            : normalizedStatus === "PARTIALLY_PAID"
+              ? sql`AND c.status = 'PARTIALLY_PAID'`
+              : sql`AND c.status = ${normalizedStatus}`
+          : sql``
+      }
       ${dateFromTs ? sql`AND c.created_at >= ${dateFromTs}` : sql``}
       ${dateToNextDay ? sql`AND c.created_at < ${dateToNextDay}` : sql``}
     LEFT JOIN customers cu
@@ -178,7 +384,13 @@ async function getOwnerCreditsSummary({
       ${parsedLocationId ? sql`AND l.id = ${parsedLocationId}` : sql``}
       ${
         pattern
-          ? sql`AND (c.id IS NULL OR cu.name ILIKE ${pattern} OR cu.phone ILIKE ${pattern} OR CAST(c.sale_id AS TEXT) ILIKE ${pattern})`
+          ? sql`AND (
+              c.id IS NULL
+              OR cu.name ILIKE ${pattern}
+              OR cu.phone ILIKE ${pattern}
+              OR CAST(c.id AS TEXT) ILIKE ${pattern}
+              OR CAST(c.sale_id AS TEXT) ILIKE ${pattern}
+            )`
           : sql``
       }
     GROUP BY l.id, l.name, l.code, l.status
@@ -224,13 +436,47 @@ async function listOwnerCredits({
   const cur = cursor ? Number(cursor) : null;
 
   const res = await db.execute(sql`
+    WITH installment_summary AS (
+      SELECT
+        ci.credit_id,
+        COUNT(*)::int as "installmentCount",
+        MIN(ci.due_date) FILTER (
+          WHERE ci.status IN ('PENDING', 'PARTIALLY_PAID', 'OVERDUE')
+        ) as "nextInstallmentDue"
+      FROM credit_installments ci
+      GROUP BY ci.credit_id
+    )
     SELECT
-      c.*,
+      c.id,
+      c.location_id as "locationId",
+      c.sale_id as "saleId",
+      c.customer_id as "customerId",
+      c.principal_amount::bigint as "principalAmount",
+      c.paid_amount::bigint as "paidAmount",
+      c.remaining_amount::bigint as "remainingAmount",
+      c.credit_mode as "creditMode",
+      c.status,
+      c.created_by as "createdBy",
+      c.approved_by as "approvedBy",
+      c.rejected_by as "rejectedBy",
+      c.settled_by as "settledBy",
+      c.approved_at as "approvedAt",
+      c.rejected_at as "rejectedAt",
+      c.settled_at as "settledAt",
+      c.created_at as "createdAt",
+      c.due_date as "dueDate",
+      c.note,
+
+      ins."installmentCount" as "installmentCount",
+      ins."nextInstallmentDue" as "nextInstallmentDue",
+
       l.name as "locationName",
       l.code as "locationCode",
       l.status as "locationStatus",
+
       cu.name as "customerName",
       cu.phone as "customerPhone",
+
       u_created.name as "createdByName",
       u_approved.name as "approvedByName",
       u_rejected.name as "rejectedByName",
@@ -249,12 +495,27 @@ async function listOwnerCredits({
       ON u_rejected.id = c.rejected_by
     LEFT JOIN users u_settled
       ON u_settled.id = c.settled_by
+    LEFT JOIN installment_summary ins
+      ON ins.credit_id = c.id
     WHERE 1 = 1
       ${parsedLocationId ? sql`AND c.location_id = ${parsedLocationId}` : sql``}
-      ${normalizedStatus ? sql`AND c.status = ${normalizedStatus}` : sql``}
+      ${
+        normalizedStatus
+          ? normalizedStatus === "PENDING_APPROVAL"
+            ? sql`AND c.status IN ('PENDING', 'PENDING_APPROVAL')`
+            : normalizedStatus === "PARTIALLY_PAID"
+              ? sql`AND c.status = 'PARTIALLY_PAID'`
+              : sql`AND c.status = ${normalizedStatus}`
+          : sql``
+      }
       ${
         pattern
-          ? sql`AND (cu.name ILIKE ${pattern} OR cu.phone ILIKE ${pattern} OR CAST(c.sale_id AS TEXT) ILIKE ${pattern})`
+          ? sql`AND (
+              cu.name ILIKE ${pattern}
+              OR cu.phone ILIKE ${pattern}
+              OR CAST(c.id AS TEXT) ILIKE ${pattern}
+              OR CAST(c.sale_id AS TEXT) ILIKE ${pattern}
+            )`
           : sql``
       }
       ${dateFromTs ? sql`AND c.created_at >= ${dateFromTs}` : sql``}
@@ -316,11 +577,13 @@ async function getOwnerCreditById({ creditId }) {
   `);
 
   const meta = rowsOf(metaRes)[0] || {};
+  const decorated = decorateCreditShape(detail);
 
   return {
-    ...detail,
+    ...decorated,
+    amount: toNumber(decorated.principalAmount, 0),
     location: {
-      id: String(detail.locationId || context.locationId),
+      id: String(decorated.locationId || context.locationId),
       name: meta.locationName ?? null,
       code: meta.locationCode ?? null,
       status: meta.locationStatus ?? null,
@@ -366,9 +629,12 @@ async function ownerDecideCredit({ actorUserId, creditId, decision, note }) {
 async function ownerSettleCredit({
   actorUserId,
   creditId,
+  amount,
   method,
   note,
+  reference,
   cashSessionId,
+  installmentId,
 }) {
   const id = Number(creditId);
   if (!Number.isInteger(id) || id <= 0) {
@@ -378,7 +644,10 @@ async function ownerSettleCredit({
   }
 
   const contextRes = await db.execute(sql`
-    SELECT id, location_id as "locationId"
+    SELECT
+      id,
+      location_id as "locationId",
+      remaining_amount as "remainingAmount"
     FROM credits
     WHERE id = ${id}
     LIMIT 1
@@ -391,13 +660,21 @@ async function ownerSettleCredit({
     throw err;
   }
 
+  const amountToUse =
+    amount != null && amount !== ""
+      ? amount
+      : Number(context.remainingAmount || 0) || 0;
+
   return creditService.settleCredit({
     locationId: context.locationId,
     cashierId: actorUserId,
     creditId: id,
+    amount: amountToUse,
     method,
     note,
+    reference,
     cashSessionId,
+    installmentId,
   });
 }
 

@@ -15,9 +15,6 @@ const createUserSchema = z.object({
   role: z.enum(allowedRoles),
   password: z.string().min(8),
   isActive: z.boolean().optional(),
-
-  // Owner can pass this explicitly.
-  // Admin will be forced to own location in service layer.
   locationId: z.coerce.number().int().positive().optional(),
 });
 
@@ -26,8 +23,6 @@ const updateUserSchema = z
     name: z.string().trim().min(2).optional(),
     role: z.enum(allowedRoles).optional(),
     isActive: z.boolean().optional(),
-
-    // Owner can move a user to another branch if needed.
     locationId: z.coerce.number().int().positive().optional(),
   })
   .refine(
@@ -42,4 +37,13 @@ const updateUserSchema = z
     },
   );
 
-module.exports = { createUserSchema, updateUserSchema, allowedRoles };
+const resetUserPasswordSchema = z.object({
+  password: z.string().min(8),
+});
+
+module.exports = {
+  createUserSchema,
+  updateUserSchema,
+  resetUserPasswordSchema,
+  allowedRoles,
+};

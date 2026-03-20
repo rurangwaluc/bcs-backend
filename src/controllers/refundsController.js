@@ -120,6 +120,17 @@ async function listRefunds(request, reply) {
       toExclusive: parseIsoDateEndExclusive(parsed.data.to),
     });
 
+    console.log("[REFUNDS][LIST]", {
+      role: request.user?.role,
+      userId: request.user?.id,
+      requestLocationId: request.user?.locationId ?? null,
+      effectiveLocationId,
+      query: parsed.data,
+      count: Array.isArray(result?.rows) ? result.rows.length : -1,
+      nextCursor: result?.nextCursor ?? null,
+      firstRow: result?.rows?.[0] || null,
+    });
+
     return reply.send({
       ok: true,
       refunds: result.rows,
@@ -144,6 +155,18 @@ async function getRefundById(request, reply) {
     const out = await refundsService.getRefundById({
       refundId,
       locationId: effectiveLocationId,
+    });
+
+    console.log("[REFUNDS][DETAIL]", {
+      role: request.user?.role,
+      userId: request.user?.id,
+      requestLocationId: request.user?.locationId ?? null,
+      effectiveLocationId,
+      refundId,
+      found: !!out,
+      refund: out?.refund || null,
+      itemsCount: Array.isArray(out?.items) ? out.items.length : 0,
+      firstItem: out?.items?.[0] || null,
     });
 
     if (!out) {

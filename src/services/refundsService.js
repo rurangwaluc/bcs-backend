@@ -38,6 +38,10 @@ function cleanText(v, max) {
   return s.slice(0, max);
 }
 
+function rowsOf(result) {
+  return result?.rows || result || [];
+}
+
 async function findOpenCashSessionId(tx, { locationId, cashierId }) {
   const r = await tx.execute(sql`
     SELECT id
@@ -49,13 +53,13 @@ async function findOpenCashSessionId(tx, { locationId, cashierId }) {
     LIMIT 1
   `);
 
-  const rows = r.rows || r;
+  const rows = rowsOf(r);
   return rows?.[0]?.id ?? null;
 }
 
 function computeLineAmount(si, qty) {
-  const unitPrice = Number(si.unitPrice);
-  const lineTotal = Number(si.lineTotal);
+  const unitPrice = Number(si.unitPrice ?? si.unit_price ?? 0) || 0;
+  const lineTotal = Number(si.lineTotal ?? si.line_total ?? 0) || 0;
   const q = Math.max(1, Math.round(qty));
 
   const calc = unitPrice * q;
@@ -88,7 +92,7 @@ async function createRefund({
       throw err;
     }
 
-    const st = String(sale.status || "");
+    const st = String(sale.status || "").toUpperCase();
     if (!["COMPLETED", "PARTIALLY_REFUNDED"].includes(st)) {
       const err = new Error("Sale not refundable");
       err.code = "BAD_STATUS";
@@ -212,6 +216,11 @@ async function createRefund({
       `);
     }
 
+    await tx
+      .update(refunds)
+      .set({ totalAmount: computedTotal })
+      .where(eq(refunds.id, Number(refund.id)));
+
     await tx.insert(cashLedger).values({
       locationId,
       cashierId: userId,
@@ -228,14 +237,14 @@ async function createRefund({
 
     const remain = await tx.execute(sql`
       SELECT
-        SUM(si.qty)::int as sold_qty,
-        COALESCE(SUM(ri.qty),0)::int as refunded_qty
+        COALESCE(SUM(si.qty), 0)::int as sold_qty,
+        COALESCE(SUM(ri.qty), 0)::int as refunded_qty
       FROM sale_items si
       LEFT JOIN refund_items ri ON ri.sale_item_id = si.id
       WHERE si.sale_id = ${saleId}
     `);
 
-    const r0 = (remain.rows || remain || [])[0] || {
+    const r0 = rowsOf(remain)[0] || {
       sold_qty: 0,
       refunded_qty: 0,
     };
@@ -396,7 +405,7 @@ async function listRefunds({
     LIMIT ${lim}
   `);
 
-  const rows = (result.rows || result || []).map((r) => ({
+  const rows = rowsOf(result).map((r) => ({
     id: Number(r.id),
     locationId: Number(r.locationId),
     locationName: r.locationName ?? null,
@@ -467,7 +476,7 @@ async function getRefundById({ refundId, locationId = null }) {
     LIMIT 1
   `);
 
-  const refund = (headRes.rows || headRes || [])[0];
+  const refund = rowsOf(headRes)[0];
   if (!refund) return null;
 
   const itemsRes = await db.execute(sql`
@@ -477,8 +486,21 @@ async function getRefundById({ refundId, locationId = null }) {
       ri.sale_item_id as "saleItemId",
       ri.product_id as "productId",
       ri.qty,
-      ri.amount
+      ri.amount,
+
+      si.sale_id as "saleId",
+      si.qty as "saleItemQty",
+      si.unit_price as "unitPrice",
+      si.line_total as "lineTotal",
+
+      p.name as "productName",
+      p.sku as "sku"
     FROM refund_items ri
+    LEFT JOIN sale_items si
+      ON si.id = ri.sale_item_id
+    LEFT JOIN products p
+      ON p.id = ri.product_id
+     AND p.location_id = ${Number(refund.locationId)}
     WHERE ri.refund_id = ${id}
     ORDER BY ri.id ASC
   `);
@@ -505,12 +527,18 @@ async function getRefundById({ refundId, locationId = null }) {
       createdByEmail: refund.createdByEmail ?? null,
       createdAt: refund.createdAt,
     },
-    items: (itemsRes.rows || itemsRes || []).map((row) => ({
+    items: rowsOf(itemsRes).map((row) => ({
       id: Number(row.id),
       refundId: Number(row.refundId),
       saleItemId: Number(row.saleItemId),
       productId: Number(row.productId),
+      productName: row.productName ?? null,
+      sku: row.sku ?? null,
+      saleId: row.saleId == null ? null : Number(row.saleId),
+      saleItemQty: Number(row.saleItemQty || 0),
       qty: Number(row.qty || 0),
+      unitPrice: Number(row.unitPrice || 0),
+      lineTotal: Number(row.lineTotal || 0),
       amount: Number(row.amount || 0),
     })),
   };

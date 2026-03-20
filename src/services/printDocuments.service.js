@@ -20,7 +20,32 @@ function fmtDate(value) {
   return d.toISOString().slice(0, 19).replace("T", " ");
 }
 
-function documentShell({ title, subtitle, body }) {
+function branchBlock(branch = {}) {
+  const logo = branch.locationLogoUrl
+    ? `<img src="${esc(branch.locationLogoUrl)}" alt="${esc(branch.locationName || "Branch logo")}" style="max-height:72px;max-width:160px;object-fit:contain;" />`
+    : `<div style="font-weight:800;font-size:22px;letter-spacing:.03em;">${esc(branch.locationCode || branch.locationName || "BRANCH")}</div>`;
+
+  const lines = [
+    branch.locationName,
+    branch.locationCode ? `Code: ${branch.locationCode}` : null,
+    branch.locationPhone ? `Phone: ${branch.locationPhone}` : null,
+    branch.locationWebsite ? `Website: ${branch.locationWebsite}` : null,
+    branch.locationEmail ? `Email: ${branch.locationEmail}` : null,
+    branch.locationAddress ? `Address: ${branch.locationAddress}` : null,
+    branch.locationTin ? `TIN: ${branch.locationTin}` : null,
+  ].filter(Boolean);
+
+  return `
+    <div class="branch-head">
+      <div class="branch-logo">${logo}</div>
+      <div class="branch-meta">
+        ${lines.map((line) => `<div>${esc(line)}</div>`).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function documentShell({ title, subtitle, body, branch }) {
   return `<!doctype html>
 <html>
 <head>
@@ -48,6 +73,7 @@ function documentShell({ title, subtitle, body }) {
       border-bottom: 2px solid #111827;
       padding-bottom: 12px;
       margin-bottom: 18px;
+      align-items: flex-start;
     }
     .title {
       font-size: 28px;
@@ -59,6 +85,20 @@ function documentShell({ title, subtitle, body }) {
       margin-top: 6px;
       color: #4b5563;
       font-size: 13px;
+    }
+    .branch-head {
+      text-align: right;
+      max-width: 360px;
+    }
+    .branch-logo {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 10px;
+    }
+    .branch-meta {
+      font-size: 12px;
+      line-height: 1.6;
+      color: #374151;
     }
     .card-grid {
       display: grid;
@@ -158,10 +198,7 @@ function documentShell({ title, subtitle, body }) {
         <h1 class="title">${esc(title)}</h1>
         <div class="subtitle">${esc(subtitle || "")}</div>
       </div>
-      <div style="text-align:right;">
-        <div style="font-weight:800;font-size:16px;">Business Control System</div>
-        <div style="font-size:13px;color:#4b5563;margin-top:6px;">Printable professional document</div>
-      </div>
+      ${branchBlock(branch)}
     </div>
     ${body}
   </div>
@@ -262,6 +299,7 @@ function renderProformaHtml({ header, items }) {
     title: "PROFORMA INVOICE",
     subtitle: "Quotation / pre-invoice document",
     body,
+    branch: header,
   });
 }
 
@@ -361,6 +399,7 @@ function renderDeliveryNoteHtml({ header, items }) {
     title: "DELIVERY NOTE",
     subtitle: "Goods dispatch / handover document",
     body,
+    branch: header,
   });
 }
 

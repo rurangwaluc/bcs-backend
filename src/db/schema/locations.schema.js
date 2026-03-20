@@ -24,8 +24,12 @@ const locations = pgTable(
 
     status: locationStatusEnum("status").notNull().default("ACTIVE"),
 
-    // business document info
+    // branch branding + business document info
     email: varchar("email", { length: 160 }),
+    phone: varchar("phone", { length: 40 }),
+    website: varchar("website", { length: 200 }),
+    logoUrl: varchar("logo_url", { length: 500 }),
+
     address: varchar("address", { length: 255 }),
     tin: varchar("tin", { length: 64 }),
     momoCode: varchar("momo_code", { length: 64 }),
